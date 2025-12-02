@@ -1,0 +1,41 @@
+# Git files
+.git
+.gitignore
+.gitattributes
+
+# Documentation
+*.md
+docs/
+LICENSE
+
+# Target directory (will be built inside container)
+target/
+**/target/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# GitHub workflows (not needed in container)
+.github/
+
+# Test files
+**/tests/
+
+# Examples
+**/examples/
+
+# Cargo lock (will be copied explicitly)
+# Cargo.lock
+
+# Local development files
+*.log
+tmp/
+temp/

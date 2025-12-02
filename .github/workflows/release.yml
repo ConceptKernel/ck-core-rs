@@ -1,0 +1,267 @@
+name: Release Build
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-binaries:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: ckr
+            asset_name: ckr-v1.3.17-x86_64-linux
+            use_cross: false
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact_name: ckr
+            asset_name: ckr-v1.3.17-aarch64-linux
+            use_cross: true
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: ckr
+            asset_name: ckr-v1.3.17-x86_64-darwin
+            use_cross: false
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: ckr
+            asset_name: ckr-v1.3.17-aarch64-darwin
+            use_cross: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross for ARM64 Linux
+        if: matrix.use_cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build binary with cross
+        if: matrix.use_cross
+        env:
+          OPENSSL_STATIC: "1"
+          OPENSSL_NO_VENDOR: "0"
+        run: cross build --release --target ${{ matrix.target }} --bin ckr
+
+      - name: Build binary native
+        if: ${{ !matrix.use_cross }}
+        run: cargo build --release --target ${{ matrix.target }} --bin ckr
+
+      - name: Strip binary (Linux)
+        if: matrix.os == 'ubuntu-latest' && !matrix.use_cross
+        run: strip target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
+
+      - name: Strip binary (macOS)
+        if: matrix.os == 'macos-latest'
+        run: strip target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
+
+      - name: Strip binary (cross)
+        if: matrix.use_cross
+        run: |
+          docker run --rm -v "$(pwd)":/project -w /project \
+            ghcr.io/cross-rs/aarch64-unknown-linux-gnu:latest \
+            aarch64-linux-gnu-strip target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
+
+      - name: Prepare artifact name
+        id: artifact
+        run: |
+          VERSION="${{ github.ref_name }}"
+          ASSET_NAME="${{ matrix.asset_name }}"
+          # Replace placeholder version with actual version
+          ASSET_NAME="${ASSET_NAME/v1.3.17/$VERSION}"
+          echo "asset_name=$ASSET_NAME" >> $GITHUB_OUTPUT
+
+      - name: Rename binary
+        run: |
+          cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} ${{ steps.artifact.outputs.asset_name }}
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.artifact.outputs.asset_name }}
+          path: ${{ steps.artifact.outputs.asset_name }}
+
+  create-release:
+    name: Create GitHub Release
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: Display structure of downloaded files
+        run: ls -R ./artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: ./artifacts/**/*
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body: |
+            ## ConceptKernel ${{ github.ref_name }}
+
+            ### Installation
+
+            **Quick install:**
+            ```bash
+            curl -sSL https://raw.githubusercontent.com/ConceptKernel/ck-core-rs/main/install.sh | sh
+            ```
+
+            **Docker:**
+            ```bash
+            docker pull conceptkernel/ck-core-rs:${{ github.ref_name }}
+            docker pull conceptkernel/ck-core-rs:latest
+            ```
+
+            ### Details
+
+            See [docs/RELEASE-NOTES-${{ github.ref_name }}.md](https://github.com/ConceptKernel/ck-core-rs/blob/main/docs/RELEASE-NOTES-${{ github.ref_name }}.md) for complete release notes.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-docker:
+    name: Build Docker ${{ matrix.platform }}
+    needs: create-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      matrix:
+        platform:
+          - linux/amd64
+          - linux/arm64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set platform variables
+        id: platform
+        run: |
+          if [ "${{ matrix.platform }}" = "linux/amd64" ]; then
+            echo "arch=x86_64" >> $GITHUB_OUTPUT
+            echo "suffix=amd64" >> $GITHUB_OUTPUT
+          else
+            echo "arch=aarch64" >> $GITHUB_OUTPUT
+            echo "suffix=arm64" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Download pre-built binary
+        uses: actions/download-artifact@v4
+        with:
+          name: ckr-${{ github.ref_name }}-${{ steps.platform.outputs.arch }}-linux
+
+      - name: Prepare build context
+        run: |
+          # Rename binary
+          mv ckr-${{ github.ref_name }}-${{ steps.platform.outputs.arch }}-linux ckr
+          chmod +x ckr
+
+          # Copy CA certificates
+          cp /etc/ssl/certs/ca-certificates.crt .
+
+          # Verify binary works
+          file ckr
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: conceptkernel
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and push platform-specific image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.prebuilt
+          push: true
+          tags: conceptkernel/ck-core-rs:${{ github.ref_name }}-${{ steps.platform.outputs.suffix }}
+          platforms: ${{ matrix.platform }}
+          provenance: false
+
+  create-manifest:
+    name: Create Multi-arch Manifest
+    needs: build-docker
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: conceptkernel
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Create and push manifests
+        run: |
+          VERSION="${{ github.ref_name }}"
+
+          # Create manifest for full version (v1.3.17)
+          docker buildx imagetools create -t conceptkernel/ck-core-rs:${VERSION} \
+            conceptkernel/ck-core-rs:${VERSION}-amd64 \
+            conceptkernel/ck-core-rs:${VERSION}-arm64
+
+          # Extract version numbers
+          MAJOR_MINOR=$(echo ${VERSION} | sed -E 's/v?([0-9]+\.[0-9]+)\.[0-9]+/\1/')
+          MAJOR=$(echo ${VERSION} | sed -E 's/v?([0-9]+)\.[0-9]+\.[0-9]+/\1/')
+
+          # Create manifest for major.minor (1.3)
+          docker buildx imagetools create -t conceptkernel/ck-core-rs:${MAJOR_MINOR} \
+            conceptkernel/ck-core-rs:${VERSION}-amd64 \
+            conceptkernel/ck-core-rs:${VERSION}-arm64
+
+          # Create manifest for major version (1)
+          docker buildx imagetools create -t conceptkernel/ck-core-rs:${MAJOR} \
+            conceptkernel/ck-core-rs:${VERSION}-amd64 \
+            conceptkernel/ck-core-rs:${VERSION}-arm64
+
+          # Create manifest for latest
+          docker buildx imagetools create -t conceptkernel/ck-core-rs:latest \
+            conceptkernel/ck-core-rs:${VERSION}-amd64 \
+            conceptkernel/ck-core-rs:${VERSION}-arm64
+
+          echo "## ✅ Docker Multi-arch Images Published!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Tags created:**" >> $GITHUB_STEP_SUMMARY
+          echo "- \`conceptkernel/ck-core-rs:${VERSION}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`conceptkernel/ck-core-rs:${MAJOR_MINOR}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`conceptkernel/ck-core-rs:${MAJOR}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`conceptkernel/ck-core-rs:latest\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Pull command:**" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "docker pull conceptkernel/ck-core-rs:${VERSION}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Repository:** https://hub.docker.com/r/conceptkernel/ck-core-rs" >> $GITHUB_STEP_SUMMARY

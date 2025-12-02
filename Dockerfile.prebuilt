@@ -1,0 +1,19 @@
+# Optimized Dockerfile using pre-built binaries
+# This skips the 50-minute Rust compilation step
+FROM gcr.io/distroless/cc-debian12:nonroot
+
+# Copy pre-built binary (should be provided at build time)
+COPY ckr /usr/local/bin/ckr
+
+# Copy CA certificates for HTTPS
+COPY ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+
+# Set working directory
+WORKDIR /ckp
+
+# Distroless runs as nonroot user by default (UID 65532)
+USER nonroot:nonroot
+
+# Default command
+ENTRYPOINT ["/usr/local/bin/ckr"]
+CMD ["--help"]
