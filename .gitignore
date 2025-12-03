@@ -24,3 +24,4 @@ target
 # Documentation (keep local, not in repo)
 docs/
 core-rs/docs/
+.DS_Store

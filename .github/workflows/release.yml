@@ -217,6 +217,9 @@ jobs:
       packages: write
 
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
@@ -265,3 +268,12 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Repository:** https://hub.docker.com/r/conceptkernel/ck-core-rs" >> $GITHUB_STEP_SUMMARY
+
+      - name: Update Docker Hub Description
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: conceptkernel
+          password: ${{ secrets.DOCKER_PASSWORD }}
+          repository: conceptkernel/ck-core-rs
+          readme-filepath: ./README.md
+          short-description: "CKP (Concept Kernel Protocol) - Conscious computational entities in a distributed garden"
