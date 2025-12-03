@@ -68,7 +68,7 @@ get_latest_version() {
 
 # Download and install binary
 install_binary() {
-    BINARY_NAME="ckr-${VERSION#v}-${ARCH}-${OS}"
+    BINARY_NAME="ckr-${VERSION}-${ARCH}-${OS}"
     DOWNLOAD_URL="https://github.com/$REPO/releases/download/$VERSION/$BINARY_NAME"
 
     echo ""
