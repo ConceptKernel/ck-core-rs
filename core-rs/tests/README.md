@@ -1460,7 +1460,7 @@ fn test_your_command() {
 - [ ] Edge routing tests (blocked - not implemented)
 - [ ] CLI command tests (deferred)
 
-### v1.3.17 Goals (Future)
+### v1.3.18 Goals (Future)
 
 - [ ] Agent identity tests (WHO tracking)
 - [ ] Type mapping validation tests

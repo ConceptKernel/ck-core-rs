@@ -19,22 +19,22 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact_name: ckr
-            asset_name: ckr-v1.3.17-x86_64-linux
+            asset_name: ckr-v1.3.18-x86_64-linux
             use_cross: false
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             artifact_name: ckr
-            asset_name: ckr-v1.3.17-aarch64-linux
+            asset_name: ckr-v1.3.18-aarch64-linux
             use_cross: true
           - os: macos-latest
             target: x86_64-apple-darwin
             artifact_name: ckr
-            asset_name: ckr-v1.3.17-x86_64-darwin
+            asset_name: ckr-v1.3.18-x86_64-darwin
             use_cross: false
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact_name: ckr
-            asset_name: ckr-v1.3.17-aarch64-darwin
+            asset_name: ckr-v1.3.18-aarch64-darwin
             use_cross: false
 
     steps:
@@ -82,7 +82,7 @@ jobs:
           VERSION="${{ github.ref_name }}"
           ASSET_NAME="${{ matrix.asset_name }}"
           # Replace placeholder version with actual version
-          ASSET_NAME="${ASSET_NAME/v1.3.17/$VERSION}"
+          ASSET_NAME="${ASSET_NAME/v1.3.18/$VERSION}"
           echo "asset_name=$ASSET_NAME" >> $GITHUB_OUTPUT
 
       - name: Rename binary
@@ -230,7 +230,7 @@ jobs:
         run: |
           VERSION="${{ github.ref_name }}"
 
-          # Create manifest for full version (v1.3.17)
+          # Create manifest for full version (v1.3.18)
           docker buildx imagetools create -t conceptkernel/ck-core-rs:${VERSION} \
             conceptkernel/ck-core-rs:${VERSION}-amd64 \
             conceptkernel/ck-core-rs:${VERSION}-arm64

@@ -1,6 +1,6 @@
 # ConceptKernel
 
-[![Version](https://img.shields.io/badge/version-1.3.17-blue.svg)](https://github.com/conceptkernel/ck-core-rs)
+[![Version](https://img.shields.io/badge/version-1.3.18-blue.svg)](https://github.com/conceptkernel/ck-core-rs)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)](https://www.rust-lang.org)
 [![Protocol](https://img.shields.io/badge/protocol-CKP%2Fv1.3-purple.svg)](docs/)
@@ -192,7 +192,7 @@ This automatically detects your platform and installs the latest version of `ckr
 docker pull conceptkernel/ck-core-rs:latest
 
 # Or specific version
-docker pull conceptkernel/ck-core-rs:v1.3.17
+docker pull conceptkernel/ck-core-rs:v1.3.18
 
 # Run ckr
 docker run --rm conceptkernel/ck-core-rs:latest --version
@@ -204,7 +204,7 @@ Download pre-built binaries from [Releases](https://github.com/ConceptKernel/ck-
 
 ```bash
 # Example for Linux x86_64
-curl -L https://github.com/ConceptKernel/ck-core-rs/releases/download/v1.3.17/ckr-v1.3.17-x86_64-linux -o ckr
+curl -L https://github.com/ConceptKernel/ck-core-rs/releases/download/v1.3.18/ckr-v1.3.18-x86_64-linux -o ckr
 chmod +x ckr
 sudo mv ckr /usr/local/bin/
 ```
@@ -303,7 +303,7 @@ The community. Through role-based permissions, consensus voting, and captured de
 
 ## Performance
 
-ConceptKernel Rust Runtime (v1.3.17):
+ConceptKernel Rust Runtime (v1.3.18):
 
 | Metric | Rust Binary | Rust Docker | Notes |
 |--------|-------------|-------------|-------|
@@ -323,7 +323,7 @@ ConceptKernel Rust Runtime (v1.3.17):
 ## Command Reference
 
 ```
-ckr v1.3.17 - ConceptKernel Rust Runtime
+ckr v1.3.18 - ConceptKernel Rust Runtime
 
 ckr
 ├── concept                # Manage concepts (kernels)
@@ -495,7 +495,7 @@ No direct writes. No coupling. Edges mostly just connect — transformation rare
 
 ## The Foundation
 
-ConceptKernel v1.3.17 implements the CKP (Concept Kernel Protocol) specification. It provides:
+ConceptKernel v1.3.18 implements the CKP (Concept Kernel Protocol) specification. It provides:
 
 - **Standardized kernel anatomy** - conceptkernel.yaml, ontology.ttl, queue/, storage/, tx/, tool/
 - **CKP URN addressing** - `ckp://Kernel:version` for sovereign identity
