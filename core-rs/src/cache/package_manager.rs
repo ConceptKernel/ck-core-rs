@@ -78,21 +78,11 @@ impl PackageManager {
                         CkpError::IoError(format!("Failed to get file metadata: {}", e))
                     })?;
 
-                    // Format mtime as YYYY-MM-DD
+                    // Format file modification time as YYYY-MM-DD
                     let created_at = if let Ok(modified) = metadata.modified() {
-                        use std::time::UNIX_EPOCH;
-                        if let Ok(duration) = modified.duration_since(UNIX_EPOCH) {
-                            let secs = duration.as_secs();
-                            // Simple YYYY-MM-DD formatting (approximation)
-                            let days_since_epoch = secs / 86400;
-                            let years = days_since_epoch / 365;
-                            let remaining_days = days_since_epoch % 365;
-                            let months = remaining_days / 30;
-                            let days = remaining_days % 30;
-                            format!("{:04}-{:02}-{:02}", 1970 + years, months + 1, days + 1)
-                        } else {
-                            "unknown".to_string()
-                        }
+                        use chrono::{DateTime, Local};
+                        let datetime: DateTime<Local> = modified.into();
+                        datetime.format("%Y-%m-%d").to_string()
                     } else {
                         "unknown".to_string()
                     };
@@ -442,6 +432,27 @@ impl PackageManager {
             }
         }
 
+        // 6. Generate ontology.ttl using template and metadata
+        use crate::ontology::generator::OntologyGenerator;
+
+        let generator = OntologyGenerator::new(target_dir.to_path_buf());
+        let ontology_result = generator.generate_from_template(
+            &extracted_dir,
+            Some(source_name),
+            new_name,
+            None, // No evidence ID for simple forks
+        );
+
+        match &ontology_result {
+            Ok(_) => {
+                // Ontology generated successfully
+            }
+            Err(e) => {
+                eprintln!("Warning: Failed to generate ontology.ttl: {}", e);
+                eprintln!("  Kernel may not load until ontology.ttl is created manually");
+            }
+        }
+
         Ok(extracted_dir)
     }
 
@@ -491,20 +502,11 @@ impl PackageManager {
             CkpError::IoError(format!("Failed to get file metadata: {}", e))
         })?;
 
-        // Format mtime as YYYY-MM-DD
+        // Format file modification time as YYYY-MM-DD
         let created_at = if let Ok(modified) = metadata.modified() {
-            use std::time::UNIX_EPOCH;
-            if let Ok(duration) = modified.duration_since(UNIX_EPOCH) {
-                let secs = duration.as_secs();
-                let days_since_epoch = secs / 86400;
-                let years = days_since_epoch / 365;
-                let remaining_days = days_since_epoch % 365;
-                let months = remaining_days / 30;
-                let days = remaining_days % 30;
-                format!("{:04}-{:02}-{:02}", 1970 + years, months + 1, days + 1)
-            } else {
-                "unknown".to_string()
-            }
+            use chrono::{DateTime, Local};
+            let datetime: DateTime<Local> = modified.into();
+            datetime.format("%Y-%m-%d").to_string()
         } else {
             "unknown".to_string()
         };
@@ -707,7 +709,6 @@ impl PackageManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
 
     #[test]
     fn test_package_manager_creation() {

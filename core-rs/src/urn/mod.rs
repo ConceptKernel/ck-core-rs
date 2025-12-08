@@ -16,10 +16,14 @@
 //! ckp://Edge.PRODUCES.MixIngredients-to-BakeCake:v1.3.12
 //! ```
 
+mod ckdl_parser;
 mod resolver;
 mod validator;
 
-pub use resolver::{UrnResolver, ParsedUrn, ParsedEdgeUrn, ParsedAgentUrn, AgentType};
+pub use ckdl_parser::{
+    CkdlParser, CkdlDocument, ExternDeclaration, KernelDeclaration, EdgeDeclaration
+};
+pub use resolver::{UrnResolver, ParsedUrn, ParsedEdgeUrn, ParsedAgentUrn, AgentType, ParsedQueryUrn, ParsedQueryUrnV2};
 pub use validator::UrnValidator;
 
 #[cfg(test)]
@@ -86,13 +90,29 @@ mod tests {
         assert_eq!(parsed.stage, Some("storage".to_string()));
         assert_eq!(parsed.path, Some("tx-123.inst".to_string()));
 
-        // Test edge URN parsing (DRAFT-03 section: Edge Identity)
+        // Test edge URN parsing with version (edge_versioning: true)
         let parsed_edge = UrnResolver::parse_edge_urn(
             "ckp://Edge.PRODUCES.MixIngredients-to-BakeCake:v1.3.12"
         ).unwrap();
         assert_eq!(parsed_edge.predicate, "PRODUCES");
         assert_eq!(parsed_edge.source, "MixIngredients");
         assert_eq!(parsed_edge.target, "BakeCake");
+        assert_eq!(parsed_edge.version, Some("v1.3.12".to_string()));
+        // With version: edge_dir includes version
+        assert_eq!(parsed_edge.edge_dir, "PRODUCES.MixIngredients-to-BakeCake:v1.3.12");
+        assert_eq!(parsed_edge.queue_path, "queue/edges/PRODUCES.MixIngredients-to-BakeCake:v1.3.12");
+
+        // Test edge URN parsing without version (edge_versioning: false)
+        let parsed_edge_no_ver = UrnResolver::parse_edge_urn(
+            "ckp://Edge.PRODUCES.MixIngredients-to-BakeCake"
+        ).unwrap();
+        assert_eq!(parsed_edge_no_ver.predicate, "PRODUCES");
+        assert_eq!(parsed_edge_no_ver.source, "MixIngredients");
+        assert_eq!(parsed_edge_no_ver.target, "BakeCake");
+        assert_eq!(parsed_edge_no_ver.version, None);
+        // Without version: edge_dir has no version
+        assert_eq!(parsed_edge_no_ver.edge_dir, "PRODUCES.MixIngredients-to-BakeCake");
+        assert_eq!(parsed_edge_no_ver.queue_path, "queue/edges/PRODUCES.MixIngredients-to-BakeCake");
 
         // Test URN type detection
         assert!(UrnResolver::is_kernel_urn("ckp://Recipes.BakeCake:v0.1"));
@@ -129,21 +149,23 @@ mod tests {
         assert_eq!(parsed_urn.stage, Some("storage".to_string()));
         assert_eq!(parsed_urn.path, Some("proof-123.inst".to_string()));
 
-        // Verify ParsedEdgeUrn is accessible and can be constructed
+        // Verify ParsedEdgeUrn is accessible and can be constructed (with version)
         let parsed_edge = ParsedEdgeUrn {
             predicate: "PRODUCES".to_string(),
             source: "MixIngredients".to_string(),
             target: "BakeCake".to_string(),
-            version: "v1.3.12".to_string(),
-            queue_path: "queue/edges/PRODUCES.MixIngredients".to_string(),
+            version: Some("v1.3.12".to_string()),
+            queue_path: "queue/edges/PRODUCES.MixIngredients-to-BakeCake:v1.3.12".to_string(),
+            edge_dir: "PRODUCES.MixIngredients-to-BakeCake:v1.3.12".to_string(),
         };
 
         // Verify all fields are accessible
         assert_eq!(parsed_edge.predicate, "PRODUCES");
         assert_eq!(parsed_edge.source, "MixIngredients");
         assert_eq!(parsed_edge.target, "BakeCake");
-        assert_eq!(parsed_edge.version, "v1.3.12");
-        assert_eq!(parsed_edge.queue_path, "queue/edges/PRODUCES.MixIngredients");
+        assert_eq!(parsed_edge.version, Some("v1.3.12".to_string()));
+        assert_eq!(parsed_edge.queue_path, "queue/edges/PRODUCES.MixIngredients-to-BakeCake:v1.3.12");
+        assert_eq!(parsed_edge.edge_dir, "PRODUCES.MixIngredients-to-BakeCake:v1.3.12");
 
         // Verify Clone and PartialEq traits work
         let cloned_urn = parsed_urn.clone();

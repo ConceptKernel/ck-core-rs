@@ -5,10 +5,13 @@
  * - library: RDF ontology library with Oxigraph (Phase 4 Stage 0)
  * - query: SPARQL query builders
  * - bfo: BFO 2020 type system with compile-time ontological alignment
+ * - generator: Automatic ontology.ttl generation for forked/created kernels
  */
 
 pub mod bfo;
 pub mod config_reader;
+pub mod generator;
+pub mod improvement;
 pub mod library;
 pub mod query;
 
@@ -21,6 +24,18 @@ pub use config_reader::{OntologyReader, Ontology};
 // RDF ontology library (loads ontology.ttl files with Oxigraph)
 pub use library::{OntologyLibrary, OntologyError, RoleMetadata, FunctionMetadata, KernelMetadata};
 pub use query::{QueryResult, SparqlQuery};
+
+// Ontology generator (automatic ontology.ttl generation)
+pub use generator::OntologyGenerator;
+
+// Self-improvement API (validation, recommendations, consensus)
+pub use improvement::{
+    ImprovementAPI,
+    ValidationIssue, IssueSeverity, IssueType,
+    ImprovementRecommendation, Priority, ActionType, ConsensusStatus,
+    ImprovementProcess, ProcessPhase,
+    TriggerImprovementAction, ImprovementActionResponse,
+};
 
 #[cfg(test)]
 mod tests {
@@ -38,6 +53,7 @@ mod tests {
         accepts_bfo_type(BfoEntityType::Occurrent);
 
         // Verify BfoAligned trait is accessible
+        #[allow(dead_code)]
         fn requires_bfo_aligned<T: BfoAligned>() {}
 
         // If this compiles, exports are correct

@@ -1,5 +1,5 @@
 #!/bin/sh
-# ConceptKernel (ckr) installer script
+# ConceptKernel (ckp) installer script
 # Usage: curl -sSL https://raw.githubusercontent.com/ConceptKernel/ck-core-rs/main/install.sh | sh
 
 set -e
@@ -15,7 +15,7 @@ REPO="ConceptKernel/ck-core-rs"
 VERSION="${CKR_VERSION:-latest}"
 INSTALL_DIR="${CKR_INSTALL_DIR:-/usr/local/bin}"
 
-echo "${GREEN}ConceptKernel (ckr) Installer${NC}"
+echo "${GREEN}ConceptKernel (ckp) Installer${NC}"
 echo "================================"
 echo ""
 
@@ -68,7 +68,7 @@ get_latest_version() {
 
 # Download and install binary
 install_binary() {
-    BINARY_NAME="ckr-${VERSION}-${ARCH}-${OS}"
+    BINARY_NAME="ckp-${VERSION}-${ARCH}-${OS}"
     DOWNLOAD_URL="https://github.com/$REPO/releases/download/$VERSION/$BINARY_NAME"
 
     echo ""
@@ -79,7 +79,7 @@ install_binary() {
     trap "rm -rf $TMP_DIR" EXIT
 
     # Download binary
-    if ! curl -sSL -f "$DOWNLOAD_URL" -o "$TMP_DIR/ckr"; then
+    if ! curl -sSL -f "$DOWNLOAD_URL" -o "$TMP_DIR/ckp"; then
         echo "${RED}Error: Failed to download binary${NC}"
         echo "URL: $DOWNLOAD_URL"
         echo ""
@@ -88,22 +88,22 @@ install_binary() {
     fi
 
     # Make executable
-    chmod +x "$TMP_DIR/ckr"
+    chmod +x "$TMP_DIR/ckp"
 
     # Verify it runs
-    if ! "$TMP_DIR/ckr" --version > /dev/null 2>&1; then
+    if ! "$TMP_DIR/ckp" --version > /dev/null 2>&1; then
         echo "${RED}Error: Downloaded binary is not executable${NC}"
         exit 1
     fi
 
     # Install to destination
-    echo "Installing to: ${GREEN}$INSTALL_DIR/ckr${NC}"
+    echo "Installing to: ${GREEN}$INSTALL_DIR/ckp${NC}"
 
     if [ -w "$INSTALL_DIR" ]; then
-        mv "$TMP_DIR/ckr" "$INSTALL_DIR/ckr"
+        mv "$TMP_DIR/ckp" "$INSTALL_DIR/ckp"
     else
         echo "${YELLOW}Requesting sudo access to install to $INSTALL_DIR${NC}"
-        sudo mv "$TMP_DIR/ckr" "$INSTALL_DIR/ckr"
+        sudo mv "$TMP_DIR/ckp" "$INSTALL_DIR/ckp"
     fi
 
     echo ""
@@ -112,17 +112,17 @@ install_binary() {
 
 # Verify installation
 verify_installation() {
-    if command -v ckr > /dev/null 2>&1; then
-        INSTALLED_VERSION=$(ckr --version 2>&1 | head -1)
+    if command -v ckp > /dev/null 2>&1; then
+        INSTALLED_VERSION=$(ckp --version 2>&1 | head -1)
         echo ""
         echo "Installed: ${GREEN}$INSTALLED_VERSION${NC}"
         echo ""
         echo "Try it out:"
-        echo "  ${YELLOW}ckr --help${NC}"
+        echo "  ${YELLOW}ckp --help${NC}"
         echo ""
     else
         echo ""
-        echo "${YELLOW}Warning: 'ckr' not found in PATH${NC}"
+        echo "${YELLOW}Warning: 'ckp' not found in PATH${NC}"
         echo "Add $INSTALL_DIR to your PATH:"
         echo "  export PATH=\"$INSTALL_DIR:\$PATH\""
         echo ""

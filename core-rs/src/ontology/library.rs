@@ -4,8 +4,8 @@
  */
 
 use oxigraph::store::Store;
-use oxigraph::model::{NamedNode, GraphName};
-use oxigraph::io::GraphFormat;
+use oxigraph::model::NamedNode;
+use oxigraph::io::RdfFormat;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -71,7 +71,7 @@ pub struct KernelMetadata {
 
 pub struct OntologyLibrary {
     store: Store,
-    project_root: PathBuf,
+    pub project_root: PathBuf,
     kernel_graphs: HashMap<String, String>,
 }
 
@@ -96,22 +96,99 @@ impl OntologyLibrary {
     /// Load ontologies defined in .ckproject
     fn load_from_project(&mut self, project_root: &Path) -> Result<(), OntologyError> {
         let ckproject_path = project_root.join(".ckproject");
-        
+
         if !ckproject_path.exists() {
+            eprintln!("[OntologyLibrary] ⚠️  WARNING: .ckproject not found at {}", ckproject_path.display());
+            eprintln!("[OntologyLibrary]    Canonical ontologies will not be loaded");
             return Ok(()); // Optional
         }
-        
+
         let config = ProjectConfig::load(&ckproject_path)
             .map_err(|e| OntologyError::LoadError(e.to_string()))?;
-        
+
         if let Some(ontology_config) = config.spec.ontology {
-            // Load core ontologies using URN resolution
-            self.load_ontology_urn(&ontology_config.core, "https://conceptkernel.org/ontology/core")?;
-            self.load_ontology_urn(&ontology_config.bfo, "http://purl.obolibrary.org/obo/bfo.owl")?;
-            self.load_ontology_urn(&ontology_config.predicates, "https://conceptkernel.org/ontology/predicates")?;
+            eprintln!("[OntologyLibrary] Loading canonical ontologies from .ckproject...");
+
+            // Load core ontologies - support both file:// and URN formats
+            if let Err(e) = self.load_ontology_reference(&ontology_config.core, "https://conceptkernel.org/ontology/core") {
+                eprintln!("[OntologyLibrary] ⚠️  WARNING: Failed to load core ontology: {}", e);
+            }
+
+            if let Err(e) = self.load_ontology_reference(&ontology_config.bfo, "http://purl.obolibrary.org/obo/bfo.owl") {
+                eprintln!("[OntologyLibrary] ⚠️  WARNING: Failed to load BFO ontology: {}", e);
+            }
+
+            if let Err(e) = self.load_ontology_reference(&ontology_config.predicates, "https://conceptkernel.org/ontology/predicates") {
+                eprintln!("[OntologyLibrary] ⚠️  WARNING: Failed to load predicates ontology: {}", e);
+            }
+
+            // Load optional ontologies
+            if let Some(processes) = ontology_config.processes.as_ref() {
+                if let Err(e) = self.load_ontology_reference(processes, "https://conceptkernel.org/ontology/processes") {
+                    eprintln!("[OntologyLibrary] ⚠️  WARNING: Failed to load processes ontology: {}", e);
+                }
+            }
+
+            if let Some(rbac) = ontology_config.rbac.as_ref() {
+                if let Err(e) = self.load_ontology_reference(rbac, "https://conceptkernel.org/ontology/rbac") {
+                    eprintln!("[OntologyLibrary] ⚠️  WARNING: Failed to load RBAC ontology: {}", e);
+                }
+            }
+
+            if let Some(improvement) = ontology_config.improvement.as_ref() {
+                if let Err(e) = self.load_ontology_reference(improvement, "https://conceptkernel.org/ontology/improvement") {
+                    eprintln!("[OntologyLibrary] ⚠️  WARNING: Failed to load self-improvement ontology: {}", e);
+                }
+            }
+
+            if let Some(workflow) = ontology_config.workflow.as_ref() {
+                if let Err(e) = self.load_ontology_reference(workflow, "https://conceptkernel.org/ontology/workflow") {
+                    eprintln!("[OntologyLibrary] ⚠️  WARNING: Failed to load workflow ontology: {}", e);
+                }
+            }
+
+            eprintln!("[OntologyLibrary] ✓ Canonical ontologies loaded from .ckproject");
+        } else {
+            eprintln!("[OntologyLibrary] ⚠️  WARNING: No spec.ontology section in .ckproject");
+            eprintln!("[OntologyLibrary]    Canonical ontologies from /concepts/.ontology/ will not be loaded");
+            eprintln!("[OntologyLibrary]    Add spec.ontology section referencing canonical ontology files");
         }
-        
+
         Ok(())
+    }
+
+    /// Load ontology from file:// or ckp:// reference
+    fn load_ontology_reference(&mut self, reference: &str, graph_uri: &str) -> Result<(), OntologyError> {
+        if reference.starts_with("file://") {
+            // Local file reference
+            let path_str = reference.strip_prefix("file://").unwrap();
+            let path = if path_str.starts_with("./") {
+                self.project_root.join(path_str.strip_prefix("./").unwrap())
+            } else {
+                PathBuf::from(path_str)
+            };
+
+            if !path.exists() {
+                return Err(OntologyError::NotFound(format!(
+                    "Ontology file not found: {} (resolved to {})",
+                    reference, path.display()
+                )));
+            }
+
+            self.load_ontology_file(&path, graph_uri)
+        } else if reference.starts_with("ckp://") {
+            // URN reference - delegate to existing URN loader
+            self.load_ontology_urn(reference, graph_uri)
+        } else if reference.starts_with("http://") || reference.starts_with("https://") {
+            // HTTP reference - for BFO, just note it (don't try to fetch)
+            eprintln!("[OntologyLibrary]    Skipping remote ontology: {}", reference);
+            Ok(())
+        } else {
+            Err(OntologyError::LoadError(format!(
+                "Unsupported ontology reference format: {} (expected file://, ckp://, or http(s)://)",
+                reference
+            )))
+        }
     }
     
     /// Load ontology via URN resolution
@@ -175,22 +252,78 @@ impl OntologyLibrary {
             .join("concepts")
             .join(kernel_name)
             .join("ontology.ttl");
-        
+
         if !ontology_path.exists() {
             return Err(OntologyError::NotFound(format!(
                 "No ontology.ttl found for kernel: {}",
                 kernel_name
             )));
         }
-        
+
+        // Validate ontology imports before loading
+        self.validate_kernel_ontology_imports(kernel_name, &ontology_path)?;
+
         let graph_uri = format!(
             "https://conceptkernel.org/ontology/{}",
             kernel_name.to_lowercase().replace(".", "-")
         );
-        
+
         self.load_ontology_file(&ontology_path, &graph_uri)?;
         self.kernel_graphs.insert(kernel_name.to_string(), graph_uri);
-        
+
+        Ok(())
+    }
+
+    /// Validate that kernel ontology properly imports canonical ontologies
+    fn validate_kernel_ontology_imports(&self, kernel_name: &str, ontology_path: &Path) -> Result<(), OntologyError> {
+        use std::fs;
+
+        let content = fs::read_to_string(ontology_path)
+            .map_err(|e| OntologyError::LoadError(format!("Failed to read ontology.ttl: {}", e)))?;
+
+        let mut warnings = Vec::new();
+
+        // Check for required owl:imports declarations
+        if !content.contains("owl:imports <https://conceptkernel.org/ontology/core>") &&
+           !content.contains("owl:imports <http://conceptkernel.org/ontology/core>") {
+            warnings.push("Missing owl:imports for ConceptKernel core ontology");
+        }
+
+        if !content.contains("owl:imports <http://purl.obolibrary.org/obo/bfo.owl>") {
+            warnings.push("Missing owl:imports for BFO (Basic Formal Ontology)");
+        }
+
+        // Check for BFO class usage
+        let uses_bfo = content.contains("bfo:0000040") || // MaterialEntity
+                       content.contains("bfo:0000023") || // Role
+                       content.contains("bfo:0000034") || // Function
+                       content.contains("bfo:0000016");   // Disposition
+
+        if !uses_bfo {
+            warnings.push("No BFO class usage detected - ontology may not be properly aligned");
+        }
+
+        // Check for ckp: namespace usage
+        let uses_ckp = content.contains("ckp:Kernel") ||
+                       content.contains("ckp:bearer") ||
+                       content.contains("ckp:realizedBy");
+
+        if !uses_ckp {
+            warnings.push("No ConceptKernel namespace (ckp:) usage detected - ontology may not be properly aligned");
+        }
+
+        // Emit warnings
+        if !warnings.is_empty() {
+            eprintln!("[OntologyLibrary] ⚠️  WARNING: Kernel '{}' ontology validation issues:", kernel_name);
+            for warning in &warnings {
+                eprintln!("[OntologyLibrary]    • {}", warning);
+            }
+            eprintln!("[OntologyLibrary]    Location: {}", ontology_path.display());
+            eprintln!("[OntologyLibrary]    Each kernel ontology.ttl should import canonical ontologies:");
+            eprintln!("[OntologyLibrary]      owl:imports <https://conceptkernel.org/ontology/core> ;");
+            eprintln!("[OntologyLibrary]      owl:imports <http://purl.obolibrary.org/obo/bfo.owl> ;");
+        }
+
         Ok(())
     }
     
@@ -208,15 +341,13 @@ impl OntologyLibrary {
 
         let content = fs::read_to_string(path)?;
         
-        let graph_name = NamedNode::new(graph_uri)
+        let _graph_name = NamedNode::new(graph_uri)
             .map_err(|e| OntologyError::ParseError(e.to_string()))?;
         
         self.store
-            .load_graph(
+            .load_from_reader(
+                RdfFormat::Turtle,
                 content.as_bytes(),
-                GraphFormat::Turtle,
-                GraphName::NamedNode(graph_name),
-                None,
             )
             .map_err(|e| OntologyError::LoadError(e.to_string()))?;
         
@@ -1140,6 +1271,243 @@ impl OntologyLibrary {
         }
 
         Ok(permissions.into_iter().collect())
+    }
+
+    // ========================================================================
+    // GENERIC QUERY API (v2)
+    // ========================================================================
+
+    /// Generic query method that works across all kernels
+    ///
+    /// This method makes queries generic since all kernels share the same BFO
+    /// ontological foundation. It supports both kernel-scoped and global queries.
+    ///
+    /// # Query Patterns
+    ///
+    /// 1. Kernel-scoped: `ckp://{Kernel}:{Version}/{Resource}?params`
+    /// 2. Global query: `ckp://{Resource}?params`
+    /// 3. Backward compat: `ckp://{Kernel}?view={resource}&params`
+    ///
+    /// # Supported Resources
+    ///
+    /// All BFO Occurrents:
+    /// - `Process` - All processes (BFO:0000015)
+    /// - `Workflow` - Workflow processes
+    /// - `ImprovementProcess` - Self-improvement processes
+    /// - `ConsensusProcess` - Consensus governance processes
+    /// - `WorkflowPhase` - Temporal parts of workflows
+    ///
+    /// # Arguments
+    ///
+    /// * `query_urn` - Query URN in one of the supported patterns
+    ///
+    /// # Returns
+    ///
+    /// Vector of result rows (HashMap<String, String>)
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use ckp_core::OntologyLibrary;
+    /// use std::path::PathBuf;
+    ///
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let library = OntologyLibrary::new(PathBuf::from("."))?;
+    ///
+    /// // Kernel-scoped query
+    /// let results = library.query_generic("ckp://System.Gateway:v1.0/Process?limit=20")?;
+    ///
+    /// // Global query (all kernels)
+    /// let results = library.query_generic("ckp://Process?limit=100")?;
+    ///
+    /// for row in results {
+    ///     println!("Process: {}", row.get("process").unwrap_or(&"".to_string()));
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn query_generic(&self, query_urn: &str) -> Result<Vec<std::collections::HashMap<String, String>>, OntologyError> {
+        use crate::urn::UrnResolver;
+
+        // Parse query URN using v2 parser
+        let parsed = UrnResolver::parse_query_urn_v2(query_urn)
+            .map_err(|e| OntologyError::ParseError(format!("Invalid query URN: {}", e)))?;
+
+        // Build SPARQL query based on resource type
+        let sparql_query = match parsed.resource.as_str() {
+            "Process" => self.build_process_query(&parsed)?,
+            "Workflow" => self.build_workflow_query(&parsed)?,
+            "ImprovementProcess" => self.build_improvement_process_query(&parsed)?,
+            "ConsensusProcess" => self.build_consensus_process_query(&parsed)?,
+            "WorkflowPhase" => self.build_workflow_phase_query(&parsed)?,
+            _ => {
+                return Err(OntologyError::ParseError(format!(
+                    "Unsupported resource type: {}. Supported: Process, Workflow, ImprovementProcess, ConsensusProcess, WorkflowPhase",
+                    parsed.resource
+                )));
+            }
+        };
+
+        self.query_sparql(&sparql_query)
+    }
+
+    /// Build SPARQL query for Process resources
+    fn build_process_query(&self, parsed: &crate::urn::ParsedQueryUrnV2) -> Result<String, OntologyError> {
+        let limit = parsed.params.get("limit").map(|s| s.as_str()).unwrap_or("100");
+        let order = parsed.params.get("order").map(|s| s.as_str()).unwrap_or("desc");
+
+        let kernel_filter = if let Some(ref kernel) = parsed.kernel {
+            format!("FILTER(CONTAINS(STR(?kernel), \"{}\"))", kernel)
+        } else {
+            String::new()
+        };
+
+        Ok(format!(
+            r#"
+PREFIX bfo: <http://purl.obolibrary.org/obo/BFO_>
+PREFIX ckp: <https://conceptkernel.org/ontology#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+
+SELECT ?process ?kernel ?timestamp ?type
+WHERE {{
+    ?process rdf:type bfo:0000015 ;
+             ckp:processUrn ?urn ;
+             ckp:kernel ?kernel ;
+             ckp:timestamp ?timestamp .
+    OPTIONAL {{ ?process rdf:type ?type }}
+    {}
+}}
+ORDER BY {}(?timestamp)
+LIMIT {}
+"#,
+            kernel_filter,
+            if order == "desc" { "DESC" } else { "ASC" },
+            limit
+        ))
+    }
+
+    /// Build SPARQL query for Workflow resources
+    fn build_workflow_query(&self, parsed: &crate::urn::ParsedQueryUrnV2) -> Result<String, OntologyError> {
+        let limit = parsed.params.get("limit").map(|s| s.as_str()).unwrap_or("50");
+
+        let status_filter = if let Some(status) = parsed.params.get("status") {
+            format!("FILTER(?status = \"{}\")", status)
+        } else {
+            String::new()
+        };
+
+        Ok(format!(
+            r#"
+PREFIX ckpw: <https://conceptkernel.org/ontology/workflow#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+
+SELECT ?workflow ?label ?description ?status
+WHERE {{
+    ?workflow rdf:type ckpw:Workflow ;
+              ckpw:workflowLabel ?label ;
+              ckpw:workflowDescription ?description .
+    OPTIONAL {{ ?workflow ckpw:workflowStatus ?status }}
+    {}
+}}
+ORDER BY ?label
+LIMIT {}
+"#,
+            status_filter, limit
+        ))
+    }
+
+    /// Build SPARQL query for ImprovementProcess resources
+    fn build_improvement_process_query(&self, parsed: &crate::urn::ParsedQueryUrnV2) -> Result<String, OntologyError> {
+        let limit = parsed.params.get("limit").map(|s| s.as_str()).unwrap_or("50");
+
+        let kernel_filter = if let Some(ref kernel) = parsed.kernel {
+            format!("FILTER(CONTAINS(STR(?kernel), \"{}\"))", kernel)
+        } else {
+            String::new()
+        };
+
+        Ok(format!(
+            r#"
+PREFIX ckpi: <https://conceptkernel.org/ontology/improvement#>
+PREFIX bfo: <http://purl.obolibrary.org/obo/BFO_>
+PREFIX ckp: <https://conceptkernel.org/ontology#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+
+SELECT ?process ?kernel ?phase ?timestamp
+WHERE {{
+    ?process rdf:type ckpi:ImprovementProcess ;
+             rdfs:subClassOf bfo:0000015 ;
+             ckp:kernel ?kernel ;
+             ckp:timestamp ?timestamp .
+    OPTIONAL {{ ?process ckpi:currentPhase ?phase }}
+    {}
+}}
+ORDER BY DESC(?timestamp)
+LIMIT {}
+"#,
+            kernel_filter, limit
+        ))
+    }
+
+    /// Build SPARQL query for ConsensusProcess resources
+    fn build_consensus_process_query(&self, parsed: &crate::urn::ParsedQueryUrnV2) -> Result<String, OntologyError> {
+        let limit = parsed.params.get("limit").map(|s| s.as_str()).unwrap_or("50");
+
+        Ok(format!(
+            r#"
+PREFIX ckpc: <https://conceptkernel.org/ontology/consensus#>
+PREFIX bfo: <http://purl.obolibrary.org/obo/BFO_>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+
+SELECT ?process ?proposal ?status ?quorum
+WHERE {{
+    ?process rdf:type ckpc:ConsensusProcess ;
+             rdfs:subClassOf bfo:0000015 ;
+             ckpc:proposal ?proposal .
+    OPTIONAL {{ ?process ckpc:status ?status }}
+    OPTIONAL {{ ?process ckpc:quorum ?quorum }}
+}}
+ORDER BY DESC(?process)
+LIMIT {}
+"#,
+            limit
+        ))
+    }
+
+    /// Build SPARQL query for WorkflowPhase resources
+    fn build_workflow_phase_query(&self, parsed: &crate::urn::ParsedQueryUrnV2) -> Result<String, OntologyError> {
+        let limit = parsed.params.get("limit").map(|s| s.as_str()).unwrap_or("50");
+
+        let workflow_filter = if let Some(workflow) = parsed.params.get("workflow") {
+            format!("FILTER(CONTAINS(STR(?workflow), \"{}\"))", workflow)
+        } else {
+            String::new()
+        };
+
+        Ok(format!(
+            r#"
+PREFIX ckpw: <https://conceptkernel.org/ontology/workflow#>
+PREFIX bfo: <http://purl.obolibrary.org/obo/BFO_>
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+
+SELECT ?phase ?workflow ?phaseName ?status ?kernel
+WHERE {{
+    ?phase rdf:type ckpw:WorkflowPhase ;
+           ckpw:phaseName ?phaseName ;
+           ckpw:kernelUrn ?kernel .
+    ?workflow ckpw:hasPhase ?phase .
+    OPTIONAL {{ ?phase ckpw:phaseStatus ?status }}
+    {}
+}}
+ORDER BY ?workflow ?phaseName
+LIMIT {}
+"#,
+            workflow_filter, limit
+        ))
     }
 }
 

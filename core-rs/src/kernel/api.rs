@@ -328,19 +328,49 @@ fn write_evidence_bfo_compliant<T: Serialize>(
     fs::create_dir_all(storage_dir)
         .map_err(|e| CkpError::IoError(format!("Failed to create storage dir: {}", e)))?;
 
-    // Extract suffix from tx_id (e.g., "tx_1234567890_analysis" -> "analysis")
-    let suffix = tx_id.split('_').last().unwrap_or("analysis");
-    let inst_dir = storage_dir.join(format!("{}-{}.inst", tx_id, suffix));
+    // Use tx_id directly as the instance directory name
+    // The tx_id already contains timestamp and unique identifier (e.g., "1764844292952-54a90023")
+    let inst_dir = storage_dir.join(format!("{}.inst", tx_id));
 
     fs::create_dir_all(&inst_dir)
         .map_err(|e| CkpError::IoError(format!("Failed to create instance dir: {}", e)))?;
 
+    // Write payload.json (full evidence)
     let payload_file = inst_dir.join("payload.json");
     let evidence_json = serde_json::to_string_pretty(evidence)
         .map_err(|e| CkpError::InvalidJson(format!("Failed to serialize evidence: {}", e)))?;
 
-    fs::write(&payload_file, evidence_json)
+    fs::write(&payload_file, &evidence_json)
         .map_err(|e| CkpError::IoError(format!("Failed to write evidence: {}", e)))?;
+
+    // Write receipt.bin (metadata + content for System.Wss broadcasting)
+    // Parse evidence to extract key fields
+    let evidence_value: serde_json::Value = serde_json::from_str(&evidence_json)
+        .map_err(|e| CkpError::InvalidJson(format!("Failed to re-parse evidence: {}", e)))?;
+
+    // Include full evidence in receipt for client delivery
+    let receipt = serde_json::json!({
+        "type": "event",
+        "eventType": "evidence_minted",
+        "processed": true,
+        "txId": evidence_value.get("txId").or_else(|| evidence_value.get("tx_id")),
+        "kernel": evidence_value.get("kernel"),
+        "timestamp": evidence_value.get("timestamp"),
+        "processUrn": evidence_value.get("processUrn").or_else(|| evidence_value.get("process_urn")),
+        // Include actual content fields for client
+        "task": evidence_value.get("task"),
+        "response": evidence_value.get("response"),
+        "result": evidence_value.get("result"),
+        "mode": evidence_value.get("mode"),
+        "duration_ms": evidence_value.get("duration_ms").or_else(|| evidence_value.get("durationMs"))
+    });
+
+    let receipt_file = inst_dir.join("receipt.bin");
+    let receipt_json = serde_json::to_string_pretty(&receipt)
+        .map_err(|e| CkpError::InvalidJson(format!("Failed to serialize receipt: {}", e)))?;
+
+    fs::write(&receipt_file, receipt_json)
+        .map_err(|e| CkpError::IoError(format!("Failed to write receipt: {}", e)))?;
 
     Ok(payload_file)
 }

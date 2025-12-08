@@ -26,8 +26,8 @@ pub struct EdgeRouterDaemon {
     root: PathBuf,
     edge_kernel: Arc<std::sync::Mutex<EdgeKernel>>,
     ontology_reader: OntologyReader,
-    ontology_library: Option<Arc<OntologyLibrary>>,
-    process_tracker: Arc<ProcessTracker>,
+    _ontology_library: Option<Arc<OntologyLibrary>>,
+    _process_tracker: Arc<ProcessTracker>,
     verbose: bool,
     // Cache: kernel_name -> List<(target, predicate)>
     notification_cache: Arc<std::sync::Mutex<HashMap<String, Vec<(String, String)>>>>,
@@ -49,8 +49,8 @@ impl EdgeRouterDaemon {
             root: root.clone(),
             edge_kernel: Arc::new(std::sync::Mutex::new(edge_kernel)),
             ontology_reader: OntologyReader::new(root.clone()),
-            ontology_library,
-            process_tracker,
+            _ontology_library: ontology_library,
+            _process_tracker: process_tracker,
             verbose,
             notification_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
         })

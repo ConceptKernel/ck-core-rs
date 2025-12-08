@@ -5,8 +5,8 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "ckr")]
-#[command(version = "1.3.17")]
+#[command(name = "ckp")]
+#[command(version = "1.3.19")]
 #[command(about = "ConceptKernel Rust Runtime", long_about = None)]
 struct Cli {
     #[command(subcommand)]
@@ -78,6 +78,14 @@ enum Commands {
     Daemon {
         #[command(subcommand)]
         command: DaemonCommands,
+    },
+    /// Query resources by URN
+    Query {
+        /// URN with query parameters (e.g., "ckp://Process?limit=10&order=desc")
+        urn: String,
+        /// Output format (table, json, yaml)
+        #[arg(long, default_value = "table")]
+        format: String,
     },
     /// Dynamic kernel command (e.g., role, user, provider)
     #[command(external_subcommand)]
@@ -287,7 +295,15 @@ async fn handle_stop(kernel: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Stopping kernel: {}", kernel);
 
-    let root = std::env::current_dir()?;
+    // Find project root using registry if not in a project directory
+    let root = match resolve_project_root() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            eprintln!("Run 'ckp project list' to see available projects or cd into a project directory");
+            std::process::exit(1);
+        }
+    };
     let manager = KernelManager::new(root)?;
 
     let stopped = manager.stop_kernel(kernel).await?;
@@ -638,7 +654,16 @@ fn handle_list_edges() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Listing all edges...\n");
 
-    let root = std::env::current_dir()?;
+    // Find project root
+    let root = match resolve_project_root() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            eprintln!("Run 'ckp project list' to see available projects or cd into a project directory");
+            std::process::exit(1);
+        }
+    };
+
     let mut edge_kernel = EdgeKernel::new(root)?;
 
     let edges = edge_kernel.list_edges()?;
@@ -1090,6 +1115,7 @@ fn print_custom_help() {
     println!("  down          Stop all running concepts in the project");
     println!("  status        Show status of all concepts");
     println!("  emit          Emit an event to a concept");
+    println!("  query         Query resources by URN (e.g., ckp://Process?limit=10)");
     println!("  validate-urn  Validate a URN");
     println!("  help          Print this message or the help of the given subcommand(s)");
 
@@ -1324,7 +1350,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         std::process::exit(1);
                     }
 
-                    let root = std::env::current_dir()?;
+                    // Find project root using registry if not in a project directory
+                    let root = match resolve_project_root() {
+                        Ok(r) => r,
+                        Err(e) => {
+                            eprintln!("Error: {}", e);
+                            eprintln!("Run 'ckp project list' to see available projects or cd into a project directory");
+                            std::process::exit(1);
+                        }
+                    };
                     let manager = KernelManager::new(root.clone())?;
 
                     // Start the kernel using KernelManager
@@ -1799,7 +1833,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             println!("  Predicate: {}", parsed.predicate);
                             println!("  Source:    {}", parsed.source);
                             println!("  Target:    {}", parsed.target);
-                            println!("  Version:   {}", parsed.version);
+                            println!("  Version:   {}", parsed.version.as_deref().unwrap_or("none"));
                             println!("  Queue:     {}", parsed.queue_path);
                         }
                         Err(e) => println!("Error parsing: {}", e),
@@ -1827,6 +1861,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 std::process::exit(1);
             }
+        }
+
+        Commands::Query { urn, format } => {
+            handle_query(&urn, &format).await?;
         }
 
         Commands::Daemon { command } => {
@@ -1982,6 +2020,170 @@ async fn handle_generic_describe(
     }
 
     Ok(())
+}
+
+/// Handle `ckp query <URN>` command
+async fn handle_query(urn: &str, format: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use ckp_core::{UrnResolver, ProcessTracker, QueryFilters, ProjectRegistry};
+    use std::path::PathBuf;
+
+    // Try current directory first
+    let mut root = std::env::current_dir()?;
+
+    // If not in a project, use current project from registry
+    if !root.join(".ckproject").exists() {
+        let mut registry = ProjectRegistry::new()?;
+        if let Some(current_name) = registry.get_current_name()? {
+            if let Some(project) = registry.get(&current_name)? {
+                root = PathBuf::from(&project.path);
+            }
+        } else {
+            eprintln!("Error: Not in a ConceptKernel project and no current project set");
+            eprintln!("Run 'ckp project list' to see available projects");
+            std::process::exit(1);
+        }
+    }
+
+    // Parse query URN
+    let parsed = UrnResolver::parse_query_urn(urn)?;
+
+    match parsed.resource.as_str() {
+        "Process" => {
+            let tracker = ProcessTracker::new(root)?;
+
+            // Check if fragment is present (e.g., ckp://Process#txId)
+            // If so, lookup specific process instead of querying
+            if let Some(fragment) = parsed.fragment {
+                // Fragment format: {process_type}-{txId}
+                // Construct full process URN for lookup
+                let process_urn = format!("ckp://Process#{}", fragment);
+
+                match tracker.load_process(&process_urn) {
+                    Some(process) => {
+                        // Format single process result
+                        match format {
+                            "json" => {
+                                println!("{}", serde_json::to_string_pretty(&process)?);
+                            }
+                            "yaml" => {
+                                println!("{}", serde_yaml::to_string(&process)?);
+                            }
+                            _ => {
+                                // Table format for single process
+                                println!("\nProcess: {}", process.urn);
+                                println!("Type:    {}", process.process_type);
+                                println!("TxID:    {}", process.tx_id);
+                                println!("Status:  {}", process.status);
+                                println!("Created: {}", process.created_at);
+                                println!("Updated: {}", process.updated_at);
+
+                                if let Some(end) = &process.temporal_region.end {
+                                    println!("Ended:   {}", end);
+                                }
+                                if let Some(duration) = process.temporal_region.duration {
+                                    println!("Duration: {}ms", duration);
+                                }
+
+                                if !process.temporal_parts.is_empty() {
+                                    println!("\nTemporal Parts ({}):", process.temporal_parts.len());
+                                    for part in &process.temporal_parts {
+                                        println!("  - {}: {}", part.phase, part.timestamp);
+                                    }
+                                }
+
+                                if let Some(error) = &process.error {
+                                    println!("\nError: {}", error);
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
+                    None => {
+                        eprintln!("Error: Process not found: {}", process_urn);
+                        eprintln!("\nThe process may not exist or may have been cleaned up.");
+                        std::process::exit(1);
+                    }
+                }
+            }
+
+            // No fragment - query with filters
+            let limit = parsed.params.get("limit")
+                .and_then(|v| v.parse().ok());
+            let order = parsed.params.get("order").cloned();
+            let sort_field = parsed.params.get("sort").cloned();
+            let process_type = parsed.params.get("type").cloned();
+            let kernel = parsed.params.get("kernel").cloned();
+            let status = parsed.params.get("status").cloned();
+
+            let filters = QueryFilters {
+                process_type,
+                kernel,
+                status,
+                start_after: None,
+                start_before: None,
+                limit,
+                order,
+                sort_field,
+            };
+
+            // Query processes
+            let processes = tracker.query_processes(filters)?;
+
+            // Format output
+            match format {
+                "json" => {
+                    println!("{}", serde_json::to_string_pretty(&processes)?);
+                }
+                "yaml" => {
+                    println!("{}", serde_yaml::to_string(&processes)?);
+                }
+                "table" => {
+                    if processes.is_empty() {
+                        println!("No processes found matching query.");
+                        return Ok(());
+                    }
+
+                    println!("\n{:<22} {:<12} {:<12} {:<26} {:<26}",
+                        "TX_ID", "TYPE", "STATUS", "CREATED", "KERNEL");
+                    println!("{}", "-".repeat(100));
+
+                    for process in &processes {
+                        // created_at is already a String (RFC3339), extract date+time part
+                        let created = if process.created_at.len() >= 19 {
+                            process.created_at[0..19].replace('T', " ")
+                        } else {
+                            process.created_at.clone()
+                        };
+
+                        let kernel_name = process.participants.get("kernel")
+                            .and_then(|v: &serde_json::Value| v.as_str())
+                            .unwrap_or("-");
+
+                        println!("{:<22} {:<12} {:<12} {:<26} {:<26}",
+                            process.tx_id,
+                            process.process_type,
+                            process.status,
+                            created,
+                            kernel_name
+                        );
+                    }
+
+                    println!("\nTotal: {} process(es)", processes.len());
+                }
+                _ => {
+                    eprintln!("Error: Unknown format '{}'. Use: table, json, or yaml", format);
+                    std::process::exit(1);
+                }
+            }
+
+            Ok(())
+        }
+        _ => {
+            eprintln!("Error: Unsupported resource type '{}'. Currently supported: Process", parsed.resource);
+            eprintln!("\nExample: ckp query \"ckp://Process?limit=10&order=desc\"");
+            std::process::exit(1);
+        }
+    }
 }
 
 async fn handle_dynamic_command(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {

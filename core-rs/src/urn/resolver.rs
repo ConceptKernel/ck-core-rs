@@ -14,13 +14,47 @@ pub struct ParsedUrn {
 }
 
 /// Parsed edge URN components
+///
+/// Supports two formats based on `edge_versioning` flag in .ckproject:
+///
+/// **When edge_versioning = false (default):**
+/// - URN: `ckp://Edge.{PREDICATE}.{Source}-to-{Target}` (no version)
+/// - Folder: `PREDICATE.Source-to-Target`
+///
+/// **When edge_versioning = true:**
+/// - URN: `ckp://Edge.{PREDICATE}.{Source}-to-{Target}:{version}`
+/// - Folder: `PREDICATE.Source-to-Target:{version}`
+///
+/// Example:
+/// - `ckp://Edge.PRODUCES.ConceptKernel.LLM.Fabric-to-System.Wss` (no version)
+/// - `ckp://Edge.PRODUCES.ConceptKernel.LLM.Fabric-to-System.Wss:v1.3.19` (with version)
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParsedEdgeUrn {
     pub predicate: String,
     pub source: String,
     pub target: String,
-    pub version: String,
-    pub queue_path: String,
+    pub version: Option<String>,  // None when edge_versioning: false
+    pub queue_path: String,       // queue/edges/{edge_dir}
+    pub edge_dir: String,         // PREDICATE.Source-to-Target(:version)?
+}
+
+impl ParsedEdgeUrn {
+    /// Generate edge directory name based on versioning flag
+    ///
+    /// - edge_versioning = false: `PREDICATE.Source-to-Target`
+    /// - edge_versioning = true: `PREDICATE.Source-to-Target:version`
+    pub fn get_edge_dir(&self) -> String {
+        if let Some(ref version) = self.version {
+            format!("{}.{}-to-{}:{}", self.predicate, self.source, self.target, version)
+        } else {
+            format!("{}.{}-to-{}", self.predicate, self.source, self.target)
+        }
+    }
+
+    /// Generate queue path
+    pub fn get_queue_path(&self) -> String {
+        format!("queue/edges/{}", self.get_edge_dir())
+    }
 }
 
 /// Agent type for parsed Agent URNs
@@ -35,6 +69,48 @@ pub enum AgentType {
 pub struct ParsedAgentUrn {
     pub agent_type: AgentType,
     pub identifier: String,  // username or kernel name
+}
+
+/// Parsed query URN with query parameters (v1 - legacy)
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParsedQueryUrn {
+    pub resource: String,  // e.g., "Process"
+    pub fragment: Option<String>,  // e.g., "tx-123" from "Process#tx-123"
+    pub params: std::collections::HashMap<String, String>,
+}
+
+/// Enhanced parsed query URN with kernel namespace (v2)
+///
+/// Supports hierarchical URN schema that reflects BFO ontology:
+/// - `ckp://{Kernel}:{Version}/{Resource}?params` - Kernel-scoped query
+/// - `ckp://{Resource}?params` - Global query across all kernels
+///
+/// # Examples
+///
+/// ```
+/// use ckp_core::UrnResolver;
+///
+/// // Kernel-scoped query
+/// let parsed = UrnResolver::parse_query_urn_v2(
+///     "ckp://System.Gateway:v1.0/Process?limit=20"
+/// ).unwrap();
+/// assert_eq!(parsed.kernel, Some("System.Gateway".to_string()));
+/// assert_eq!(parsed.version, Some("v1.0".to_string()));
+/// assert_eq!(parsed.resource, "Process");
+///
+/// // Global query
+/// let parsed = UrnResolver::parse_query_urn_v2(
+///     "ckp://Process?limit=20"
+/// ).unwrap();
+/// assert_eq!(parsed.kernel, None);
+/// assert_eq!(parsed.resource, "Process");
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParsedQueryUrnV2 {
+    pub kernel: Option<String>,        // Extracted from path namespace
+    pub version: Option<String>,       // Kernel version
+    pub resource: String,               // Process, Workflow, ImprovementProcess, etc.
+    pub params: std::collections::HashMap<String, String>, // Query parameters
 }
 
 /// URN resolver for parsing and resolving ckp:// URIs
@@ -203,51 +279,80 @@ impl UrnResolver {
         urn.starts_with("ckp://") && !urn.starts_with("ckp://Edge.")
     }
 
-    /// Parse edge URN into components
+    /// Parse edge URN with optional version
+    ///
+    /// Supports two formats based on `edge_versioning` flag:
+    ///
+    /// **When edge_versioning = false (default):**
+    /// - Format: `ckp://Edge.{PREDICATE}.{Source}-to-{Target}` (no version)
+    ///
+    /// **When edge_versioning = true:**
+    /// - Format: `ckp://Edge.{PREDICATE}.{Source}-to-{Target}:{version}`
     ///
     /// # Examples
     ///
     /// ```
     /// use ckp_core::UrnResolver;
     ///
+    /// // Without version (edge_versioning: false)
+    /// let parsed = UrnResolver::parse_edge_urn(
+    ///     "ckp://Edge.PRODUCES.ConceptKernel.LLM.Fabric-to-System.Wss"
+    /// ).unwrap();
+    /// assert_eq!(parsed.predicate, "PRODUCES");
+    /// assert_eq!(parsed.source, "ConceptKernel.LLM.Fabric");
+    /// assert_eq!(parsed.target, "System.Wss");
+    /// assert_eq!(parsed.version, None);
+    /// assert_eq!(parsed.edge_dir, "PRODUCES.ConceptKernel.LLM.Fabric-to-System.Wss");
+    ///
+    /// // With version (edge_versioning: true)
     /// let parsed = UrnResolver::parse_edge_urn(
     ///     "ckp://Edge.PRODUCES.MixIngredients-to-BakeCake:v1.3.12"
     /// ).unwrap();
     /// assert_eq!(parsed.predicate, "PRODUCES");
     /// assert_eq!(parsed.source, "MixIngredients");
     /// assert_eq!(parsed.target, "BakeCake");
-    /// assert_eq!(parsed.version, "v1.3.12");
-    /// assert_eq!(parsed.queue_path, "queue/edges/PRODUCES.MixIngredients");
+    /// assert_eq!(parsed.version, Some("v1.3.12".to_string()));
+    /// assert_eq!(parsed.edge_dir, "PRODUCES.MixIngredients-to-BakeCake:v1.3.12");
     /// ```
     pub fn parse_edge_urn(edge_urn: &str) -> Result<ParsedEdgeUrn> {
         if edge_urn.is_empty() {
             return Err(CkpError::UrnParse("Edge URN must be a non-empty string".to_string()));
         }
 
-        // Edge URN regex: ckp://Edge.[PREDICATE].[Source]-to-[Target]:[version]
-        // Groups: (predicate)(source)(target)(version)
-        let re = Regex::new(r"^ckp://Edge\.([^.]+)\.([^-]+)-to-([^:]+):(.+)$")
+        // Pattern: ckp://Edge.{PREDICATE}.{Source}-to-{Target}(:{version})?
+        // Uses non-greedy matching to handle dots in kernel names
+        let re = Regex::new(r"^ckp://Edge\.([^.]+)\.(.+?)-to-(.+?)(?::(.+))?$")
             .map_err(|e| CkpError::UrnParse(format!("Regex error: {}", e)))?;
 
-        let caps = re
-            .captures(edge_urn)
-            .ok_or_else(|| CkpError::InvalidEdgeUrn(edge_urn.to_string()))?;
+        if let Some(caps) = re.captures(edge_urn) {
+            let predicate = caps.get(1).unwrap().as_str().to_string();
+            let source = caps.get(2).unwrap().as_str().to_string();
+            let target = caps.get(3).unwrap().as_str().to_string();
+            let version = caps.get(4).map(|m| m.as_str().to_string());
 
-        let predicate = caps.get(1).unwrap().as_str().to_string();
-        let source = caps.get(2).unwrap().as_str().to_string();
-        let target = caps.get(3).unwrap().as_str().to_string();
-        let version = caps.get(4).unwrap().as_str().to_string();
+            // Generate paths based on whether version is present
+            let edge_dir = if let Some(ref v) = version {
+                format!("{}.{}-to-{}:{}", predicate, source, target, v)
+            } else {
+                format!("{}.{}-to-{}", predicate, source, target)
+            };
+            let queue_path = format!("queue/edges/{}", edge_dir);
 
-        // Derive queue path from predicate and source
-        let queue_path = format!("queue/edges/{}.{}", predicate, source);
+            return Ok(ParsedEdgeUrn {
+                predicate,
+                source,
+                target,
+                version,
+                queue_path,
+                edge_dir,
+            });
+        }
 
-        Ok(ParsedEdgeUrn {
-            predicate,
-            source,
-            target,
-            version,
-            queue_path,
-        })
+        // Pattern didn't match
+        Err(CkpError::InvalidEdgeUrn(format!(
+            "Invalid edge URN format: {}. Expected 'ckp://Edge.PREDICATE.Source-to-Target' or 'ckp://Edge.PREDICATE.Source-to-Target:version'",
+            edge_urn
+        )))
     }
 
     /// Extract transaction ID from URN path
@@ -405,6 +510,176 @@ impl UrnResolver {
             AgentType::Process(kernel) => format!("ckp://Agent/process:{}", kernel),
         }
     }
+
+    /// Parse query URN with query parameters (v1 - legacy)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ckp_core::UrnResolver;
+    ///
+    /// let parsed = UrnResolver::parse_query_urn("ckp://Process?limit=10&order=desc").unwrap();
+    /// assert_eq!(parsed.resource, "Process");
+    /// assert_eq!(parsed.params.get("limit"), Some(&"10".to_string()));
+    /// assert_eq!(parsed.params.get("order"), Some(&"desc".to_string()));
+    /// ```
+    pub fn parse_query_urn(urn: &str) -> Result<ParsedQueryUrn> {
+        if !urn.starts_with("ckp://") {
+            return Err(CkpError::UrnParse("Query URN must start with ckp://".to_string()));
+        }
+
+        // Split at '?' to separate resource from query params
+        let parts: Vec<&str> = urn["ckp://".len()..].splitn(2, '?').collect();
+        let resource_with_fragment = parts[0];
+
+        // Split at '#' to separate resource type from fragment (e.g., Process#tx-123)
+        let fragment_parts: Vec<&str> = resource_with_fragment.splitn(2, '#').collect();
+        let resource = fragment_parts[0].to_string();
+        let fragment = if fragment_parts.len() > 1 {
+            Some(fragment_parts[1].to_string())
+        } else {
+            None
+        };
+
+        let mut params = std::collections::HashMap::new();
+        if parts.len() > 1 {
+            // Parse query parameters
+            for param_pair in parts[1].split('&') {
+                let kv: Vec<&str> = param_pair.splitn(2, '=').collect();
+                if kv.len() == 2 {
+                    params.insert(kv[0].to_string(), kv[1].to_string());
+                }
+            }
+        }
+
+        Ok(ParsedQueryUrn { resource, fragment, params })
+    }
+
+    /// Parse enhanced query URN with kernel namespace (v2)
+    ///
+    /// Supports multiple patterns:
+    /// 1. Kernel-scoped: `ckp://{Kernel}:{Version}/{Resource}?params`
+    /// 2. Global query: `ckp://{Resource}?params`
+    /// 3. Kernel-as-resource (backward compat): `ckp://{Kernel}?view={resource}&params`
+    ///
+    /// This makes queries generic across all kernels since they share the same
+    /// BFO ontological foundation. The kernel becomes a namespace/scope for queries.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ckp_core::UrnResolver;
+    ///
+    /// // Pattern 1: Kernel-scoped query (preferred)
+    /// let parsed = UrnResolver::parse_query_urn_v2(
+    ///     "ckp://System.Gateway:v1.0/Process?limit=20&order=desc"
+    /// ).unwrap();
+    /// assert_eq!(parsed.kernel, Some("System.Gateway".to_string()));
+    /// assert_eq!(parsed.version, Some("v1.0".to_string()));
+    /// assert_eq!(parsed.resource, "Process");
+    /// assert_eq!(parsed.params.get("limit"), Some(&"20".to_string()));
+    ///
+    /// // Pattern 2: Global query (all kernels)
+    /// let parsed = UrnResolver::parse_query_urn_v2(
+    ///     "ckp://Process?limit=20"
+    /// ).unwrap();
+    /// assert_eq!(parsed.kernel, None);
+    /// assert_eq!(parsed.resource, "Process");
+    ///
+    /// // Pattern 3: Kernel-as-resource (backward compatible)
+    /// let parsed = UrnResolver::parse_query_urn_v2(
+    ///     "ckp://System.Gateway?view=Process&limit=20"
+    /// ).unwrap();
+    /// assert_eq!(parsed.kernel, Some("System.Gateway".to_string()));
+    /// assert_eq!(parsed.resource, "Process");
+    /// ```
+    pub fn parse_query_urn_v2(urn: &str) -> Result<ParsedQueryUrnV2> {
+        if !urn.starts_with("ckp://") {
+            return Err(CkpError::UrnParse("Query URN must start with ckp://".to_string()));
+        }
+
+        let content = &urn["ckp://".len()..];
+
+        // Check if this is Pattern 1: ckp://{Kernel}:{Version}/{Resource}?params
+        if content.contains(':') && content.contains('/') {
+            let colon_pos = content.find(':').unwrap();
+            let slash_pos = content.find('/').unwrap();
+
+            if slash_pos > colon_pos {
+                // This is kernel-scoped format
+                let kernel = content[..colon_pos].to_string();
+                let version_and_rest = &content[colon_pos + 1..];
+
+                let version = version_and_rest[..slash_pos - colon_pos - 1].to_string();
+                let resource_and_params = &version_and_rest[slash_pos - colon_pos..];
+
+                // Parse resource and params
+                let parts: Vec<&str> = resource_and_params.splitn(2, '?').collect();
+                let resource = parts[0].to_string();
+
+                let mut params = std::collections::HashMap::new();
+                if parts.len() > 1 {
+                    for param_pair in parts[1].split('&') {
+                        let kv: Vec<&str> = param_pair.splitn(2, '=').collect();
+                        if kv.len() == 2 {
+                            params.insert(kv[0].to_string(), kv[1].to_string());
+                        }
+                    }
+                }
+
+                return Ok(ParsedQueryUrnV2 {
+                    kernel: Some(kernel),
+                    version: Some(version),
+                    resource,
+                    params,
+                });
+            }
+        }
+
+        // Parse as either Pattern 2 (global) or Pattern 3 (kernel-as-resource)
+        let parts: Vec<&str> = content.splitn(2, '?').collect();
+        let first_part = parts[0].to_string();
+
+        let mut params = std::collections::HashMap::new();
+        if parts.len() > 1 {
+            for param_pair in parts[1].split('&') {
+                let kv: Vec<&str> = param_pair.splitn(2, '=').collect();
+                if kv.len() == 2 {
+                    params.insert(kv[0].to_string(), kv[1].to_string());
+                }
+            }
+        }
+
+        // Check if 'view' param exists (Pattern 3: kernel-as-resource)
+        if let Some(view) = params.get("view") {
+            // Pattern 3: ckp://{Kernel}?view={resource}&params
+            let resource = view.clone();
+            params.remove("view");
+
+            // Extract version if present in kernel name
+            let (kernel, version) = if first_part.contains(':') {
+                let parts: Vec<&str> = first_part.split(':').collect();
+                (parts[0].to_string(), Some(parts[1].to_string()))
+            } else {
+                (first_part, None)
+            };
+
+            Ok(ParsedQueryUrnV2 {
+                kernel: Some(kernel),
+                version,
+                resource,
+                params,
+            })
+        } else {
+            // Pattern 2: ckp://{Resource}?params (global query)
+            Ok(ParsedQueryUrnV2 {
+                kernel: None,
+                version: None,
+                resource: first_part,
+                params,
+            })
+        }
+    }
 }
 
 #[cfg(test)]
@@ -495,13 +770,25 @@ mod tests {
 
     #[test]
     fn test_parse_edge_urn() {
+        // Test with version (edge_versioning: true)
         let edge_urn = "ckp://Edge.PRODUCES.MixIngredients-to-BakeCake:v1.3.12";
         let parsed = UrnResolver::parse_edge_urn(edge_urn).unwrap();
         assert_eq!(parsed.predicate, "PRODUCES");
         assert_eq!(parsed.source, "MixIngredients");
         assert_eq!(parsed.target, "BakeCake");
-        assert_eq!(parsed.version, "v1.3.12");
-        assert_eq!(parsed.queue_path, "queue/edges/PRODUCES.MixIngredients");
+        assert_eq!(parsed.version, Some("v1.3.12".to_string()));
+        assert_eq!(parsed.edge_dir, "PRODUCES.MixIngredients-to-BakeCake:v1.3.12");
+        assert_eq!(parsed.queue_path, "queue/edges/PRODUCES.MixIngredients-to-BakeCake:v1.3.12");
+
+        // Test without version (edge_versioning: false)
+        let edge_urn_no_ver = "ckp://Edge.PRODUCES.MixIngredients-to-BakeCake";
+        let parsed_no_ver = UrnResolver::parse_edge_urn(edge_urn_no_ver).unwrap();
+        assert_eq!(parsed_no_ver.predicate, "PRODUCES");
+        assert_eq!(parsed_no_ver.source, "MixIngredients");
+        assert_eq!(parsed_no_ver.target, "BakeCake");
+        assert_eq!(parsed_no_ver.version, None);
+        assert_eq!(parsed_no_ver.edge_dir, "PRODUCES.MixIngredients-to-BakeCake");
+        assert_eq!(parsed_no_ver.queue_path, "queue/edges/PRODUCES.MixIngredients-to-BakeCake");
     }
 
     #[test]
@@ -553,13 +840,25 @@ mod tests {
     /// Node.js equivalent: UrnResolver.test.js:104
     #[test]
     fn test_parse_edge_urn_complex_names() {
+        // With version
         let edge_urn = "ckp://Edge.REQUIRES.System.Gateway.HTTP-to-System.Registry:v0.1";
         let parsed = UrnResolver::parse_edge_urn(edge_urn).unwrap();
         assert_eq!(parsed.predicate, "REQUIRES");
         assert_eq!(parsed.source, "System.Gateway.HTTP");
         assert_eq!(parsed.target, "System.Registry");
-        assert_eq!(parsed.version, "v0.1");
-        assert_eq!(parsed.queue_path, "queue/edges/REQUIRES.System.Gateway.HTTP");
+        assert_eq!(parsed.version, Some("v0.1".to_string()));
+        assert_eq!(parsed.edge_dir, "REQUIRES.System.Gateway.HTTP-to-System.Registry:v0.1");
+        assert_eq!(parsed.queue_path, "queue/edges/REQUIRES.System.Gateway.HTTP-to-System.Registry:v0.1");
+
+        // Without version
+        let edge_urn_no_ver = "ckp://Edge.REQUIRES.System.Gateway.HTTP-to-System.Registry";
+        let parsed_no_ver = UrnResolver::parse_edge_urn(edge_urn_no_ver).unwrap();
+        assert_eq!(parsed_no_ver.predicate, "REQUIRES");
+        assert_eq!(parsed_no_ver.source, "System.Gateway.HTTP");
+        assert_eq!(parsed_no_ver.target, "System.Registry");
+        assert_eq!(parsed_no_ver.version, None);
+        assert_eq!(parsed_no_ver.edge_dir, "REQUIRES.System.Gateway.HTTP-to-System.Registry");
+        assert_eq!(parsed_no_ver.queue_path, "queue/edges/REQUIRES.System.Gateway.HTTP-to-System.Registry");
     }
 
     /// Test: parseEdgeUrn() - invalid edge URN throws error
@@ -729,5 +1028,148 @@ mod tests {
             "Path should end with queue/inbox: {}",
             path_str
         );
+    }
+
+    // === Enhanced Query URN v2 Tests ===
+
+    /// Test: Parse kernel-scoped query (Pattern 1)
+    #[test]
+    fn test_parse_query_urn_v2_kernel_scoped() {
+        let urn = "ckp://System.Gateway:v1.0/Process?limit=20&order=desc";
+        let parsed = UrnResolver::parse_query_urn_v2(urn).unwrap();
+
+        assert_eq!(parsed.kernel, Some("System.Gateway".to_string()));
+        assert_eq!(parsed.version, Some("v1.0".to_string()));
+        assert_eq!(parsed.resource, "Process");
+        assert_eq!(parsed.params.get("limit"), Some(&"20".to_string()));
+        assert_eq!(parsed.params.get("order"), Some(&"desc".to_string()));
+    }
+
+    /// Test: Parse global query (Pattern 2)
+    #[test]
+    fn test_parse_query_urn_v2_global_query() {
+        let urn = "ckp://Process?limit=20&status=completed";
+        let parsed = UrnResolver::parse_query_urn_v2(urn).unwrap();
+
+        assert_eq!(parsed.kernel, None);
+        assert_eq!(parsed.version, None);
+        assert_eq!(parsed.resource, "Process");
+        assert_eq!(parsed.params.get("limit"), Some(&"20".to_string()));
+        assert_eq!(parsed.params.get("status"), Some(&"completed".to_string()));
+    }
+
+    /// Test: Parse kernel-as-resource (Pattern 3)
+    #[test]
+    fn test_parse_query_urn_v2_kernel_as_resource() {
+        let urn = "ckp://System.Gateway:v1.0?view=Process&limit=20";
+        let parsed = UrnResolver::parse_query_urn_v2(urn).unwrap();
+
+        assert_eq!(parsed.kernel, Some("System.Gateway".to_string()));
+        assert_eq!(parsed.version, Some("v1.0".to_string()));
+        assert_eq!(parsed.resource, "Process");
+        assert_eq!(parsed.params.get("limit"), Some(&"20".to_string()));
+        assert!(!parsed.params.contains_key("view")); // view param removed
+    }
+
+    /// Test: Parse kernel-scoped without params
+    #[test]
+    fn test_parse_query_urn_v2_no_params() {
+        let urn = "ckp://System.Gateway:v1.0/Process";
+        let parsed = UrnResolver::parse_query_urn_v2(urn).unwrap();
+
+        assert_eq!(parsed.kernel, Some("System.Gateway".to_string()));
+        assert_eq!(parsed.version, Some("v1.0".to_string()));
+        assert_eq!(parsed.resource, "Process");
+        assert!(parsed.params.is_empty());
+    }
+
+    /// Test: Parse complex kernel name with dots
+    #[test]
+    fn test_parse_query_urn_v2_complex_kernel_name() {
+        let urn = "ckp://System.Gateway.HTTP:v1.3.12/Process?limit=10";
+        let parsed = UrnResolver::parse_query_urn_v2(urn).unwrap();
+
+        assert_eq!(parsed.kernel, Some("System.Gateway.HTTP".to_string()));
+        assert_eq!(parsed.version, Some("v1.3.12".to_string()));
+        assert_eq!(parsed.resource, "Process");
+        assert_eq!(parsed.params.get("limit"), Some(&"10".to_string()));
+    }
+
+    /// Test: Parse different resource types (BFO Occurrents)
+    #[test]
+    fn test_parse_query_urn_v2_different_resources() {
+        let test_cases = vec![
+            ("ckp://System.Gateway:v1.0/Process?limit=20", "Process"),
+            ("ckp://System.Workflow:v1.0/Workflow?status=active", "Workflow"),
+            ("ckp://System.Improvement:v1.0/ImprovementProcess?phase=analysis", "ImprovementProcess"),
+            ("ckp://System.Consensus:v1.0/ConsensusProcess?quorum=majority", "ConsensusProcess"),
+            ("ckp://System.Workflow:v1.0/WorkflowPhase?workflow=self-improvement", "WorkflowPhase"),
+        ];
+
+        for (urn, expected_resource) in test_cases {
+            let parsed = UrnResolver::parse_query_urn_v2(urn).unwrap();
+            assert_eq!(parsed.resource, expected_resource);
+            assert!(parsed.kernel.is_some());
+            assert!(parsed.version.is_some());
+        }
+    }
+
+    /// Test: Global queries work for all resource types
+    #[test]
+    fn test_parse_query_urn_v2_global_all_resources() {
+        let test_cases = vec![
+            "ckp://Process?limit=100",
+            "ckp://Workflow?status=active",
+            "ckp://ImprovementProcess?kernel=System.Gateway",
+            "ckp://ConsensusProcess?proposal_type=improvement",
+            "ckp://WorkflowPhase?status=in_progress",
+        ];
+
+        for urn in test_cases {
+            let parsed = UrnResolver::parse_query_urn_v2(urn).unwrap();
+            assert_eq!(parsed.kernel, None);
+            assert_eq!(parsed.version, None);
+            assert!(!parsed.resource.is_empty());
+        }
+    }
+
+    /// Test: Invalid URN format errors
+    #[test]
+    fn test_parse_query_urn_v2_invalid() {
+        let invalid_urns = vec![
+            "not-a-urn",
+            "http://example.com",
+            "ckp:invalid",
+        ];
+
+        for urn in invalid_urns {
+            let result = UrnResolver::parse_query_urn_v2(urn);
+            assert!(result.is_err(), "Expected error for: {}", urn);
+        }
+    }
+
+    /// Test: Kernel without version (backward compat)
+    #[test]
+    fn test_parse_query_urn_v2_kernel_no_version() {
+        let urn = "ckp://System.Gateway?view=Process&limit=20";
+        let parsed = UrnResolver::parse_query_urn_v2(urn).unwrap();
+
+        assert_eq!(parsed.kernel, Some("System.Gateway".to_string()));
+        assert_eq!(parsed.version, None);
+        assert_eq!(parsed.resource, "Process");
+        assert_eq!(parsed.params.get("limit"), Some(&"20".to_string()));
+    }
+
+    /// Test: Query params with special characters
+    #[test]
+    fn test_parse_query_urn_v2_special_params() {
+        let urn = "ckp://System.Gateway:v1.0/Process?kernel=System.Gateway&timestamp_from=2025-12-01&timestamp_to=2025-12-31";
+        let parsed = UrnResolver::parse_query_urn_v2(urn).unwrap();
+
+        assert_eq!(parsed.kernel, Some("System.Gateway".to_string()));
+        assert_eq!(parsed.resource, "Process");
+        assert_eq!(parsed.params.get("kernel"), Some(&"System.Gateway".to_string()));
+        assert_eq!(parsed.params.get("timestamp_from"), Some(&"2025-12-01".to_string()));
+        assert_eq!(parsed.params.get("timestamp_to"), Some(&"2025-12-31".to_string()));
     }
 }

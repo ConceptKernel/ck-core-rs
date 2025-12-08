@@ -31,9 +31,11 @@ mod tests {
     #[test]
     fn test_storage_driver_trait_exports() {
         // Verify StorageDriver trait is accessible via generic bounds
+        #[allow(dead_code)]
         fn requires_storage_driver<T: StorageDriver>(_t: &T) {}
 
         // Verify StorageDriverFactory trait is accessible via generic bounds
+        #[allow(dead_code)]
         fn requires_storage_driver_factory<T: StorageDriverFactory>() {}
 
         // Verify StorageLocation enum is accessible
@@ -131,6 +133,7 @@ mod tests {
     #[test]
     fn test_version_driver_trait_exports() {
         // Verify VersionDriver trait is accessible
+        #[allow(dead_code)]
         fn requires_version_driver<T: VersionDriver>() {}
 
         // Verify VersionInfo struct is accessible
@@ -165,6 +168,7 @@ mod tests {
     #[test]
     fn test_versioned_kernel_trait_export() {
         // Verify VersionedKernel trait is accessible
+        #[allow(dead_code)]
         fn requires_versioned_kernel<T: VersionedKernel>() {}
 
         // If this compiles, trait export is correct

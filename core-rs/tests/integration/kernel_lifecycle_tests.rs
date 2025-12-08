@@ -263,7 +263,7 @@ async fn test_kernel_status_shows_correct_state() {
 
     // Initially, kernel doesn't exist in status (not started)
     // Note: get_kernel_status returns error if kernel is not running
-    let status_result = manager.get_kernel_status("Test.Status").await;
+    let _status_result = manager.get_kernel_status("Test.Status").await;
 
     // Start kernel
     let options = HashMap::new();

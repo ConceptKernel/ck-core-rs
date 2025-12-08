@@ -7,7 +7,7 @@
 //! - Edge routing
 
 use ckp_core::{
-    Kernel, EdgeKernel, EdgeMetadata, UrnResolver,
+    Kernel, EdgeMetadata, UrnResolver,
 };
 use ckp_core::drivers::FileSystemDriver;
 use std::fs;
@@ -18,20 +18,19 @@ use chrono::Utc;
 #[tokio::test]
 async fn test_kernel_to_kernel_emission() {
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = temp_dir.path().to_path_buf();
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
 
-    // Create two test kernels
+    // Create two test kernels under concepts/
     let kernel1_dir = concepts_root.join("TestKernel1");
     let kernel2_dir = concepts_root.join("TestKernel2");
-    fs::create_dir_all(kernel1_dir.join("queue/inbox")).unwrap();
-    fs::create_dir_all(kernel2_dir.join("queue/inbox")).unwrap();
 
     // Create ontologies
-    create_test_ontology(&kernel1_dir, "TestKernel1");
-    create_test_ontology(&kernel2_dir, "TestKernel2");
+    create_test_ontology(&project_root, "TestKernel1");
+    create_test_ontology(&project_root, "TestKernel2");
 
-    // Initialize kernel 1
-    let mut kernel1 = Kernel::new(concepts_root.clone(), Some("TestKernel1".to_string()), false);
+    // Initialize kernel 1 with project root
+    let mut kernel1 = Kernel::new(project_root.clone(), Some("TestKernel1".to_string()), false);
     kernel1.bootstrap("TestKernel1").await.unwrap();
 
     // Emit to kernel 2
@@ -60,11 +59,11 @@ async fn test_kernel_to_kernel_emission() {
 #[tokio::test]
 async fn test_rbac_enforcement() {
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = temp_dir.path().to_path_buf();
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
 
     // Create kernel with RBAC restrictions
     let kernel_dir = concepts_root.join("RestrictedKernel");
-    fs::create_dir_all(kernel_dir.join("queue/inbox")).unwrap();
 
     // Create ontology with RBAC rules (deny all by default)
     let ontology_content = r#"
@@ -84,7 +83,7 @@ spec:
     fs::write(kernel_dir.join("conceptkernel.yaml"), ontology_content).unwrap();
 
     // Initialize kernel with RBAC enabled
-    let mut kernel = Kernel::new(concepts_root.clone(), Some("RestrictedKernel".to_string()), true);
+    let mut kernel = Kernel::new(project_root.clone(), Some("RestrictedKernel".to_string()), true);
     kernel.bootstrap("RestrictedKernel").await.unwrap();
 
     // Try to emit to a denied target
@@ -159,7 +158,7 @@ fn test_urn_parsing() {
 }
 
 // Helper function to create test ontology
-fn create_test_ontology(kernel_dir: &std::path::Path, kernel_name: &str) {
+fn create_test_ontology(project_root: &std::path::Path, kernel_name: &str) {
     let ontology_content = format!(r#"
 apiVersion: conceptkernel/v1
 kind: Ontology
@@ -177,7 +176,22 @@ spec:
       denied: []
 "#, kernel_name);
 
-    fs::write(kernel_dir.join("conceptkernel.yaml"), ontology_content).unwrap();
+    // Create ontology.ttl (required for BFO alignment)
+    let ontology_ttl = format!(
+        r#"@prefix ckp: <ckp://{}:v0.1#> .
+@prefix bfo: <http://purl.obolibrary.org/obo/BFO_> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+
+ckp: a bfo:0000029 ;  # Site (BFO)
+    rdf:label "{}" .
+"#,
+        kernel_name, kernel_name
+    );
+
+    // Use FileSystemDriver for all filesystem operations
+    let driver = FileSystemDriver::new(project_root.to_path_buf(), kernel_name.to_string());
+    driver.ensure_kernel_structure().unwrap();
+    driver.write_ontology(&ontology_content, &ontology_ttl).unwrap();
 }
 
 // ==================== PHASE 4: MULTI-KERNEL INTEGRATION TESTS (+3 TESTS) ====================
@@ -186,7 +200,8 @@ spec:
 #[tokio::test]
 async fn test_multi_kernel_emit_chain() {
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = temp_dir.path().to_path_buf();
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
 
     // Create three test kernels
     let kernel_a_dir = concepts_root.join("KernelA");
@@ -194,13 +209,12 @@ async fn test_multi_kernel_emit_chain() {
     let kernel_c_dir = concepts_root.join("KernelC");
 
     for dir in [&kernel_a_dir, &kernel_b_dir, &kernel_c_dir] {
-        fs::create_dir_all(dir.join("queue/inbox")).unwrap();
-        create_test_ontology(dir, &dir.file_name().unwrap().to_string_lossy());
+        create_test_ontology(&project_root, &dir.file_name().unwrap().to_string_lossy());
     }
 
     // Initialize kernels
-    let mut kernel_a = Kernel::new(concepts_root.clone(), Some("KernelA".to_string()), false);
-    let mut kernel_b = Kernel::new(concepts_root.clone(), Some("KernelB".to_string()), false);
+    let mut kernel_a = Kernel::new(project_root.clone(), Some("KernelA".to_string()), false);
+    let mut kernel_b = Kernel::new(project_root.clone(), Some("KernelB".to_string()), false);
 
     kernel_a.bootstrap("KernelA").await.unwrap();
     kernel_b.bootstrap("KernelB").await.unwrap();
@@ -244,8 +258,6 @@ async fn test_storage_artifact_workflow() {
     let kernel_dir = temp_dir.path().to_path_buf();
 
     // Create storage and queue directories
-    fs::create_dir_all(kernel_dir.join("storage")).unwrap();
-    fs::create_dir_all(kernel_dir.join("queue/inbox")).unwrap();
 
     // Create filesystem driver (driver root IS the kernel directory)
     let driver = FileSystemDriver::new(kernel_dir.clone(), "StorageKernel".to_string());
@@ -304,21 +316,21 @@ async fn test_storage_artifact_workflow() {
 #[tokio::test]
 async fn test_concurrent_kernel_operations() {
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = temp_dir.path().to_path_buf();
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
 
     // Create target kernel
     let target_dir = concepts_root.join("ConcurrentTarget");
-    fs::create_dir_all(target_dir.join("queue/inbox")).unwrap();
-    create_test_ontology(&target_dir, "ConcurrentTarget");
+    create_test_ontology(&project_root, "ConcurrentTarget");
 
     // Spawn multiple kernels concurrently emitting to same target
     let mut handles = vec![];
 
     for i in 0..5 {
-        let concepts_root_clone = concepts_root.clone();
+        let project_root_clone = project_root.clone();
         let handle = tokio::spawn(async move {
             let source_name = format!("SourceKernel{}", i);
-            let mut kernel = Kernel::new(concepts_root_clone, Some(source_name.clone()), false);
+            let mut kernel = Kernel::new(project_root_clone, Some(source_name.clone()), false);
 
             kernel.emit("ConcurrentTarget", json!({
                 "source": source_name,
@@ -371,7 +383,8 @@ async fn test_concurrent_kernel_operations() {
 #[tokio::test]
 async fn test_fork_join_workflow() {
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = temp_dir.path().to_path_buf();
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
 
     // Create four test kernels: A (fork), B and C (parallel), D (join)
     let kernel_a_dir = concepts_root.join("ForkKernel");
@@ -380,14 +393,13 @@ async fn test_fork_join_workflow() {
     let kernel_d_dir = concepts_root.join("JoinKernel");
 
     for dir in [&kernel_a_dir, &kernel_b_dir, &kernel_c_dir, &kernel_d_dir] {
-        fs::create_dir_all(dir.join("queue/inbox")).unwrap();
-        create_test_ontology(dir, &dir.file_name().unwrap().to_string_lossy());
+        create_test_ontology(&project_root, &dir.file_name().unwrap().to_string_lossy());
     }
 
     // Initialize all kernels
-    let mut kernel_a = Kernel::new(concepts_root.clone(), Some("ForkKernel".to_string()), false);
-    let mut kernel_b = Kernel::new(concepts_root.clone(), Some("PathB".to_string()), false);
-    let mut kernel_c = Kernel::new(concepts_root.clone(), Some("PathC".to_string()), false);
+    let mut kernel_a = Kernel::new(project_root.clone(), Some("ForkKernel".to_string()), false);
+    let mut kernel_b = Kernel::new(project_root.clone(), Some("PathB".to_string()), false);
+    let mut kernel_c = Kernel::new(project_root.clone(), Some("PathC".to_string()), false);
 
     kernel_a.bootstrap("ForkKernel").await.unwrap();
     kernel_b.bootstrap("PathB").await.unwrap();
@@ -395,13 +407,13 @@ async fn test_fork_join_workflow() {
 
     // A forks to both B and C
     let parent_tx = format!("fork-{}", Utc::now().timestamp());
-    let tx_ab = kernel_a.emit("PathB", json!({
+    let _tx_ab = kernel_a.emit("PathB", json!({
         "parent": parent_tx,
         "branch": "B",
         "data": "processing_path_b"
     })).await.unwrap();
 
-    let tx_ac = kernel_a.emit("PathC", json!({
+    let _tx_ac = kernel_a.emit("PathC", json!({
         "parent": parent_tx,
         "branch": "C",
         "data": "processing_path_c"
@@ -460,7 +472,8 @@ async fn test_fork_join_workflow() {
 #[tokio::test]
 async fn test_pipeline_workflow() {
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = temp_dir.path().to_path_buf();
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
 
     // Create five stage pipeline
     let stages = vec!["Stage1", "Stage2", "Stage3", "Stage4", "Stage5"];
@@ -468,15 +481,14 @@ async fn test_pipeline_workflow() {
 
     for stage in &stages {
         let stage_dir = concepts_root.join(stage);
-        fs::create_dir_all(stage_dir.join("queue/inbox")).unwrap();
-        create_test_ontology(&stage_dir, stage);
+        create_test_ontology(&project_root, stage);
         stage_dirs.push(stage_dir);
     }
 
     // Initialize all stages
     let mut kernels = vec![];
     for stage in &stages {
-        let mut kernel = Kernel::new(concepts_root.clone(), Some(stage.to_string()), false);
+        let mut kernel = Kernel::new(project_root.clone(), Some(stage.to_string()), false);
         kernel.bootstrap(stage).await.unwrap();
         kernels.push(kernel);
     }
@@ -538,7 +550,8 @@ async fn test_pipeline_workflow() {
 #[tokio::test]
 async fn test_broadcast_workflow() {
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = temp_dir.path().to_path_buf();
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
 
     // Create broadcaster and 3 receivers
     let broadcaster_dir = concepts_root.join("Broadcaster");
@@ -546,16 +559,14 @@ async fn test_broadcast_workflow() {
         .map(|i| concepts_root.join(format!("Receiver{}", i)))
         .collect();
 
-    fs::create_dir_all(broadcaster_dir.join("queue/inbox")).unwrap();
-    create_test_ontology(&broadcaster_dir, "Broadcaster");
+    create_test_ontology(&project_root, "Broadcaster");
 
     for (i, dir) in receiver_dirs.iter().enumerate() {
-        fs::create_dir_all(dir.join("queue/inbox")).unwrap();
-        create_test_ontology(dir, &format!("Receiver{}", i + 1));
+        create_test_ontology(&project_root, &format!("Receiver{}", i + 1));
     }
 
     // Initialize broadcaster
-    let mut broadcaster = Kernel::new(concepts_root.clone(), Some("Broadcaster".to_string()), false);
+    let mut broadcaster = Kernel::new(project_root.clone(), Some("Broadcaster".to_string()), false);
     broadcaster.bootstrap("Broadcaster").await.unwrap();
 
     // Broadcast to all receivers simultaneously
@@ -570,7 +581,7 @@ async fn test_broadcast_workflow() {
     for i in 1..=3 {
         let target = format!("Receiver{}", i);
         let payload = broadcast_payload.clone();
-        let mut broadcaster_clone = Kernel::new(concepts_root.clone(), Some("Broadcaster".to_string()), false);
+        let mut broadcaster_clone = Kernel::new(project_root.clone(), Some("Broadcaster".to_string()), false);
 
         let handle = tokio::spawn(async move {
             broadcaster_clone.emit(&target, payload).await
@@ -613,11 +624,11 @@ async fn test_broadcast_workflow() {
 #[tokio::test]
 async fn test_recovery_from_failed_emit() {
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = temp_dir.path().to_path_buf();
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
 
     // Create source kernel with RBAC enabled and restrictive rules (deny all first)
     let source_dir = concepts_root.join("concepts/FailoverSource");
-    fs::create_dir_all(source_dir.join("queue/inbox")).unwrap();
 
     // Create ontology with RBAC that denies all by default
     let ontology_content = r#"
@@ -636,13 +647,12 @@ spec:
 "#;
     fs::write(source_dir.join("conceptkernel.yaml"), ontology_content).unwrap();
 
-    let mut kernel = Kernel::new(concepts_root.clone(), Some("FailoverSource".to_string()), true);
+    let mut kernel = Kernel::new(project_root.clone(), Some("FailoverSource".to_string()), true);
     kernel.bootstrap("FailoverSource").await.unwrap();
 
     // Create a target kernel
     let target_dir = concepts_root.join("concepts/RecoveryTarget");
-    fs::create_dir_all(target_dir.join("queue/inbox")).unwrap();
-    create_test_ontology(&target_dir, "RecoveryTarget");
+    create_test_ontology(&project_root, "RecoveryTarget");
 
     // Try to emit - should fail due to RBAC denying all
     let result = kernel.emit("RecoveryTarget", json!({
@@ -699,18 +709,18 @@ spec:
 #[tokio::test]
 async fn test_recovery_from_corrupted_queue() {
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = temp_dir.path().to_path_buf();
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
 
     // Create test kernel
     let kernel_dir = concepts_root.join("CorruptionTest");
-    fs::create_dir_all(kernel_dir.join("queue/inbox")).unwrap();
-    create_test_ontology(&kernel_dir, "CorruptionTest");
+    create_test_ontology(&project_root, "CorruptionTest");
 
-    let mut kernel = Kernel::new(concepts_root.clone(), Some("CorruptionTest".to_string()), false);
+    let mut kernel = Kernel::new(project_root.clone(), Some("CorruptionTest".to_string()), false);
     kernel.bootstrap("CorruptionTest").await.unwrap();
 
     // Create a valid job first
-    let tx1 = kernel.emit("CorruptionTest", json!({
+    let _tx1 = kernel.emit("CorruptionTest", json!({
         "message": "valid_before_corruption"
     })).await.unwrap();
 
@@ -758,7 +768,8 @@ async fn test_recovery_from_corrupted_queue() {
 #[tokio::test]
 async fn test_graceful_degradation() {
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = temp_dir.path().to_path_buf();
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
 
     // Create primary service and backup service
     let primary_dir = concepts_root.join("PrimaryService");
@@ -766,11 +777,10 @@ async fn test_graceful_degradation() {
     let client_dir = concepts_root.join("ClientService");
 
     for dir in [&primary_dir, &backup_dir, &client_dir] {
-        fs::create_dir_all(dir.join("queue/inbox")).unwrap();
-        create_test_ontology(dir, &dir.file_name().unwrap().to_string_lossy());
+        create_test_ontology(&project_root, &dir.file_name().unwrap().to_string_lossy());
     }
 
-    let mut client = Kernel::new(concepts_root.clone(), Some("ClientService".to_string()), false);
+    let mut client = Kernel::new(project_root.clone(), Some("ClientService".to_string()), false);
     client.bootstrap("ClientService").await.unwrap();
 
     // Try to emit to primary (which will fail - directory exists but let's simulate failure)
@@ -820,7 +830,8 @@ async fn test_graceful_degradation() {
 #[tokio::test]
 async fn test_10_stage_linear_pipeline() {
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = temp_dir.path().to_path_buf();
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
 
     // Create 10-stage linear pipeline
     let stages: Vec<String> = (1..=10).map(|i| format!("Stage{}", i)).collect();
@@ -828,16 +839,14 @@ async fn test_10_stage_linear_pipeline() {
 
     for stage in &stages {
         let stage_dir = concepts_root.join(stage);
-        fs::create_dir_all(stage_dir.join("queue/inbox")).unwrap();
-        fs::create_dir_all(stage_dir.join("queue/archive")).unwrap();
-        create_test_ontology(&stage_dir, stage);
+        create_test_ontology(&project_root, stage);
         stage_dirs.push(stage_dir);
     }
 
     // Initialize all pipeline stages
     let mut kernels = vec![];
     for stage in &stages {
-        let mut kernel = Kernel::new(concepts_root.clone(), Some(stage.to_string()), false);
+        let mut kernel = Kernel::new(project_root.clone(), Some(stage.to_string()), false);
         kernel.bootstrap(stage).await.unwrap();
         kernels.push(kernel);
     }
@@ -904,7 +913,8 @@ async fn test_10_stage_linear_pipeline() {
 #[tokio::test]
 async fn test_10_stage_pipeline_with_branching() {
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = temp_dir.path().to_path_buf();
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
 
     // Create 10-kernel pipeline with diamond branching:
     // Stage1 -> Stage2 -> [Stage3A, Stage3B] -> Stage4 -> ... -> Stage10
@@ -915,16 +925,15 @@ async fn test_10_stage_pipeline_with_branching() {
 
     for stage in &stages {
         let stage_dir = concepts_root.join(stage);
-        fs::create_dir_all(stage_dir.join("queue/inbox")).unwrap();
-        create_test_ontology(&stage_dir, stage);
+        create_test_ontology(&project_root, stage);
     }
 
     // Initialize kernels
-    let mut stage1 = Kernel::new(concepts_root.clone(), Some("Stage1".to_string()), false);
-    let mut stage2 = Kernel::new(concepts_root.clone(), Some("Stage2".to_string()), false);
-    let mut stage3a = Kernel::new(concepts_root.clone(), Some("Stage3A".to_string()), false);
-    let mut stage3b = Kernel::new(concepts_root.clone(), Some("Stage3B".to_string()), false);
-    let mut stage4 = Kernel::new(concepts_root.clone(), Some("Stage4".to_string()), false);
+    let mut stage1 = Kernel::new(project_root.clone(), Some("Stage1".to_string()), false);
+    let mut stage2 = Kernel::new(project_root.clone(), Some("Stage2".to_string()), false);
+    let mut stage3a = Kernel::new(project_root.clone(), Some("Stage3A".to_string()), false);
+    let mut stage3b = Kernel::new(project_root.clone(), Some("Stage3B".to_string()), false);
+    let mut stage4 = Kernel::new(project_root.clone(), Some("Stage4".to_string()), false);
 
     stage1.bootstrap("Stage1").await.unwrap();
     stage2.bootstrap("Stage2").await.unwrap();
@@ -1004,7 +1013,8 @@ async fn test_10_stage_pipeline_with_branching() {
 #[tokio::test]
 async fn test_10_stage_pipeline_with_merge_points() {
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = temp_dir.path().to_path_buf();
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
 
     // Create complex pipeline with multiple merge points:
     // S1 -> [S2, S3] -> S4 (merge1) -> [S5, S6, S7] -> S8 (merge2) -> [S9, S10] -> S11 (merge3)
@@ -1015,10 +1025,9 @@ async fn test_10_stage_pipeline_with_merge_points() {
     let mut kernels = std::collections::HashMap::new();
     for stage in &stages {
         let stage_dir = concepts_root.join(stage);
-        fs::create_dir_all(stage_dir.join("queue/inbox")).unwrap();
-        create_test_ontology(&stage_dir, stage);
+        create_test_ontology(&project_root, stage);
 
-        let mut kernel = Kernel::new(concepts_root.clone(), Some(stage.to_string()), false);
+        let mut kernel = Kernel::new(project_root.clone(), Some(stage.to_string()), false);
         kernel.bootstrap(stage).await.unwrap();
         kernels.insert(stage.to_string(), kernel);
     }
@@ -1110,23 +1119,23 @@ async fn test_10_stage_pipeline_with_merge_points() {
 #[tokio::test]
 async fn test_queue_overflow_backpressure() {
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = temp_dir.path().to_path_buf();
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
 
     // Create simple 2-stage pipeline
     let stages = vec!["Producer", "Consumer"];
     for stage in &stages {
         let stage_dir = concepts_root.join(stage);
-        fs::create_dir_all(stage_dir.join("queue/inbox")).unwrap();
-        create_test_ontology(&stage_dir, stage);
+        create_test_ontology(&project_root, stage);
     }
 
-    let mut producer = Kernel::new(concepts_root.clone(), Some("Producer".to_string()), false);
+    let mut producer = Kernel::new(project_root.clone(), Some("Producer".to_string()), false);
     producer.bootstrap("Producer").await.unwrap();
 
     // Flood consumer inbox with 1000 jobs rapidly
     let mut handles = vec![];
     for i in 0..1000 {
-        let mut producer_clone = Kernel::new(concepts_root.clone(), Some("Producer".to_string()), false);
+        let mut producer_clone = Kernel::new(project_root.clone(), Some("Producer".to_string()), false);
         let handle = tokio::spawn(async move {
             producer_clone.emit("Consumer", json!({
                 "job_id": i,
@@ -1173,18 +1182,18 @@ async fn test_queue_overflow_backpressure() {
 #[tokio::test]
 async fn test_slow_consumer_throttling() {
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = temp_dir.path().to_path_buf();
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
 
     // Create 3-stage pipeline: FastProducer -> SlowProcessor -> FastConsumer
     let stages = vec!["FastProducer", "SlowProcessor", "FastConsumer"];
     for stage in &stages {
         let stage_dir = concepts_root.join(stage);
-        fs::create_dir_all(stage_dir.join("queue/inbox")).unwrap();
-        create_test_ontology(&stage_dir, stage);
+        create_test_ontology(&project_root, stage);
     }
 
-    let mut producer = Kernel::new(concepts_root.clone(), Some("FastProducer".to_string()), false);
-    let mut processor = Kernel::new(concepts_root.clone(), Some("SlowProcessor".to_string()), false);
+    let mut producer = Kernel::new(project_root.clone(), Some("FastProducer".to_string()), false);
+    let mut processor = Kernel::new(project_root.clone(), Some("SlowProcessor".to_string()), false);
     producer.bootstrap("FastProducer").await.unwrap();
     processor.bootstrap("SlowProcessor").await.unwrap();
 
@@ -1242,7 +1251,8 @@ async fn test_slow_consumer_throttling() {
 #[tokio::test]
 async fn test_backpressure_propagation() {
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = temp_dir.path().to_path_buf();
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
 
     // Create 5-stage pipeline with bottleneck at Stage3
     let stages = vec!["Stage1", "Stage2", "Stage3", "Stage4", "Stage5"];
@@ -1250,10 +1260,9 @@ async fn test_backpressure_propagation() {
 
     for stage in &stages {
         let stage_dir = concepts_root.join(stage);
-        fs::create_dir_all(stage_dir.join("queue/inbox")).unwrap();
-        create_test_ontology(&stage_dir, stage);
+        create_test_ontology(&project_root, stage);
 
-        let mut kernel = Kernel::new(concepts_root.clone(), Some(stage.to_string()), false);
+        let mut kernel = Kernel::new(project_root.clone(), Some(stage.to_string()), false);
         kernel.bootstrap(stage).await.unwrap();
         kernels.push(kernel);
     }
@@ -1304,7 +1313,8 @@ async fn test_backpressure_propagation() {
 #[tokio::test]
 async fn test_mid_pipeline_cancellation() {
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = temp_dir.path().to_path_buf();
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
 
     // Create 6-stage pipeline
     let stages: Vec<String> = (1..=6).map(|i| format!("CancelStage{}", i)).collect();
@@ -1312,11 +1322,9 @@ async fn test_mid_pipeline_cancellation() {
 
     for stage in &stages {
         let stage_dir = concepts_root.join(stage);
-        fs::create_dir_all(stage_dir.join("queue/inbox")).unwrap();
-        fs::create_dir_all(stage_dir.join("queue/archive")).unwrap();
-        create_test_ontology(&stage_dir, stage);
+        create_test_ontology(&project_root, stage);
 
-        let mut kernel = Kernel::new(concepts_root.clone(), Some(stage.to_string()), false);
+        let mut kernel = Kernel::new(project_root.clone(), Some(stage.to_string()), false);
         kernel.bootstrap(stage).await.unwrap();
         kernels.push(kernel);
     }
@@ -1404,7 +1412,8 @@ async fn test_mid_pipeline_cancellation() {
 #[tokio::test]
 async fn test_pipeline_cancellation_cleanup() {
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = temp_dir.path().to_path_buf();
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
 
     // Create 4-stage pipeline
     let stages = vec!["CleanStage1", "CleanStage2", "CleanStage3", "CleanStage4"];
@@ -1412,12 +1421,9 @@ async fn test_pipeline_cancellation_cleanup() {
 
     for stage in &stages {
         let stage_dir = concepts_root.join(stage);
-        fs::create_dir_all(stage_dir.join("queue/inbox")).unwrap();
-        fs::create_dir_all(stage_dir.join("queue/archive")).unwrap();
-        fs::create_dir_all(stage_dir.join("storage")).unwrap();
-        create_test_ontology(&stage_dir, stage);
+        create_test_ontology(&project_root, stage);
 
-        let mut kernel = Kernel::new(concepts_root.clone(), Some(stage.to_string()), false);
+        let mut kernel = Kernel::new(project_root.clone(), Some(stage.to_string()), false);
         kernel.bootstrap(stage).await.unwrap();
         kernels.push(kernel);
     }
@@ -1489,7 +1495,8 @@ async fn test_pipeline_cancellation_cleanup() {
 #[tokio::test]
 async fn test_partial_pipeline_failure_cleanup() {
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = temp_dir.path().to_path_buf();
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
 
     // Create 5-stage pipeline with intentional failure point
     let stages = vec!["FailStage1", "FailStage2", "FailStage3", "FailStage4", "FailStage5"];
@@ -1497,12 +1504,9 @@ async fn test_partial_pipeline_failure_cleanup() {
 
     for stage in &stages {
         let stage_dir = concepts_root.join(stage);
-        fs::create_dir_all(stage_dir.join("queue/inbox")).unwrap();
-        fs::create_dir_all(stage_dir.join("queue/archive")).unwrap();
-        fs::create_dir_all(stage_dir.join("storage")).unwrap();
-        create_test_ontology(&stage_dir, stage);
+        create_test_ontology(&project_root, stage);
 
-        let mut kernel = Kernel::new(concepts_root.clone(), Some(stage.to_string()), false);
+        let mut kernel = Kernel::new(project_root.clone(), Some(stage.to_string()), false);
         kernel.bootstrap(stage).await.unwrap();
         kernels.push(kernel);
     }
@@ -1620,7 +1624,8 @@ async fn test_partial_pipeline_failure_cleanup() {
 #[tokio::test]
 async fn test_resource_leak_detection() {
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = temp_dir.path().to_path_buf();
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
 
     // Create 3-stage pipeline
     let stages = vec!["LeakStage1", "LeakStage2", "LeakStage3"];
@@ -1628,12 +1633,9 @@ async fn test_resource_leak_detection() {
 
     for stage in &stages {
         let stage_dir = concepts_root.join(stage);
-        fs::create_dir_all(stage_dir.join("queue/inbox")).unwrap();
-        fs::create_dir_all(stage_dir.join("queue/archive")).unwrap();
-        fs::create_dir_all(stage_dir.join("storage")).unwrap();
-        create_test_ontology(&stage_dir, stage);
+        create_test_ontology(&project_root, stage);
 
-        let mut kernel = Kernel::new(concepts_root.clone(), Some(stage.to_string()), false);
+        let mut kernel = Kernel::new(project_root.clone(), Some(stage.to_string()), false);
         kernel.bootstrap(stage).await.unwrap();
         kernels.push(kernel);
     }
@@ -1739,12 +1741,12 @@ async fn test_perf_memory_leak_detection() {
     use std::time::Instant;
 
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = temp_dir.path().to_path_buf();
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
 
     // Create target kernel
     let target_dir = concepts_root.join("MemoryLeakTarget");
-    fs::create_dir_all(target_dir.join("queue/inbox")).unwrap();
-    create_test_ontology(&target_dir, "MemoryLeakTarget");
+    create_test_ontology(&project_root, "MemoryLeakTarget");
 
     // Repeatedly create and drop kernels to test for memory leaks
     let iterations = 100;
@@ -1793,12 +1795,12 @@ async fn test_perf_concurrent_memory_leak() {
     use std::sync::Arc;
 
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = Arc::new(temp_dir.path().to_path_buf());
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = Arc::new(project_root.join("concepts"));
 
     // Create target
     let target_dir = concepts_root.join("ConcurrentMemTarget");
-    fs::create_dir_all(target_dir.join("queue/inbox")).unwrap();
-    create_test_ontology(&target_dir, "ConcurrentMemTarget");
+    create_test_ontology(&project_root, "ConcurrentMemTarget");
 
     // Spawn many concurrent tasks that create temporary data
     let task_count = 50;
@@ -1849,11 +1851,11 @@ async fn test_perf_large_payload_10mb() {
     use std::time::Instant;
 
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = temp_dir.path().to_path_buf();
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
 
     let target_dir = concepts_root.join("LargePayloadTarget");
-    fs::create_dir_all(target_dir.join("queue/inbox")).unwrap();
-    create_test_ontology(&target_dir, "LargePayloadTarget");
+    create_test_ontology(&project_root, "LargePayloadTarget");
 
     let mut kernel = Kernel::new(
         concepts_root.clone(),
@@ -1914,11 +1916,11 @@ async fn test_perf_large_payload_50mb_stress() {
     use std::time::Instant;
 
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = temp_dir.path().to_path_buf();
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
 
     let target_dir = concepts_root.join("StressPayloadTarget");
-    fs::create_dir_all(target_dir.join("queue/inbox")).unwrap();
-    create_test_ontology(&target_dir, "StressPayloadTarget");
+    create_test_ontology(&project_root, "StressPayloadTarget");
 
     let mut kernel = Kernel::new(
         concepts_root.clone(),
@@ -1968,11 +1970,11 @@ async fn test_perf_queue_memory_growth() {
     use std::time::Instant;
 
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = temp_dir.path().to_path_buf();
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
 
     let target_dir = concepts_root.join("QueueGrowthTarget");
-    fs::create_dir_all(target_dir.join("queue/inbox")).unwrap();
-    create_test_ontology(&target_dir, "QueueGrowthTarget");
+    create_test_ontology(&project_root, "QueueGrowthTarget");
 
     let mut kernel = Kernel::new(
         concepts_root.clone(),
@@ -2036,12 +2038,13 @@ async fn test_perf_queue_memory_growth() {
 #[tokio::test]
 async fn test_perf_queue_memory_growth_with_cleanup() {
     let temp_dir = TempDir::new().unwrap();
-    let kernel_dir = temp_dir.path().join("CleanupKernel");
-    fs::create_dir_all(kernel_dir.join("queue/inbox")).unwrap();
-    create_test_ontology(&kernel_dir, "CleanupKernel");
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
+    let kernel_dir = concepts_root.join("CleanupKernel");
+    create_test_ontology(&project_root, "CleanupKernel");
 
     let driver = FileSystemDriver::new(
-        kernel_dir.clone(),
+        project_root.clone(),
         "CleanupKernel".to_string()
     );
 
@@ -2099,11 +2102,11 @@ async fn test_perf_arc_mutex_overhead() {
     use std::time::Instant;
 
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = temp_dir.path().to_path_buf();
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
 
     let target_dir = concepts_root.join("ArcMutexTarget");
-    fs::create_dir_all(target_dir.join("queue/inbox")).unwrap();
-    create_test_ontology(&target_dir, "ArcMutexTarget");
+    create_test_ontology(&project_root, "ArcMutexTarget");
 
     // Test 1: Direct access (baseline)
     let mut direct_kernel = Kernel::new(
@@ -2200,7 +2203,8 @@ async fn test_perf_arc_mutex_overhead() {
 #[tokio::test]
 async fn test_error_bubbling_simple_chain_error_at_middle() {
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = temp_dir.path().to_path_buf();
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
 
     // Create three-kernel chain: KernelA -> KernelB -> KernelC
     let kernel_a_dir = concepts_root.join("KernelA");
@@ -2208,14 +2212,12 @@ async fn test_error_bubbling_simple_chain_error_at_middle() {
     let kernel_c_dir = concepts_root.join("KernelC");
 
     for dir in [&kernel_a_dir, &kernel_b_dir, &kernel_c_dir] {
-        fs::create_dir_all(dir.join("queue/inbox")).unwrap();
-        fs::create_dir_all(dir.join("queue/errors")).unwrap();
-        create_test_ontology(dir, &dir.file_name().unwrap().to_string_lossy());
+        create_test_ontology(&project_root, &dir.file_name().unwrap().to_string_lossy());
     }
 
     // Initialize all kernels
-    let mut kernel_a = Kernel::new(concepts_root.clone(), Some("KernelA".to_string()), false);
-    let mut kernel_b = Kernel::new(concepts_root.clone(), Some("KernelB".to_string()), false);
+    let mut kernel_a = Kernel::new(project_root.clone(), Some("KernelA".to_string()), false);
+    let mut kernel_b = Kernel::new(project_root.clone(), Some("KernelB".to_string()), false);
 
     kernel_a.bootstrap("KernelA").await.unwrap();
     kernel_b.bootstrap("KernelB").await.unwrap();
@@ -2254,7 +2256,7 @@ spec:
     fs::write(kernel_b_dir.join("conceptkernel.yaml"), restrictive_ontology).unwrap();
 
     // Re-bootstrap B to load restrictive RBAC
-    let mut kernel_b_restricted = Kernel::new(concepts_root.clone(), Some("KernelB".to_string()), true);
+    let mut kernel_b_restricted = Kernel::new(project_root.clone(), Some("KernelB".to_string()), true);
     kernel_b_restricted.bootstrap("KernelB").await.unwrap();
 
     // B tries to emit to C - should fail due to RBAC
@@ -2305,7 +2307,8 @@ spec:
 #[tokio::test]
 async fn test_error_bubbling_propagate_to_origin() {
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = temp_dir.path().to_path_buf();
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
 
     // Create three-kernel chain with error tracking
     let kernel_a_dir = concepts_root.join("OriginKernel");
@@ -2313,15 +2316,13 @@ async fn test_error_bubbling_propagate_to_origin() {
     let kernel_c_dir = concepts_root.join("TerminalKernel");
 
     for dir in [&kernel_a_dir, &kernel_b_dir, &kernel_c_dir] {
-        fs::create_dir_all(dir.join("queue/inbox")).unwrap();
-        fs::create_dir_all(dir.join("queue/errors")).unwrap();
-        create_test_ontology(dir, &dir.file_name().unwrap().to_string_lossy());
+        create_test_ontology(&project_root, &dir.file_name().unwrap().to_string_lossy());
     }
 
     // Initialize kernels
-    let mut kernel_a = Kernel::new(concepts_root.clone(), Some("OriginKernel".to_string()), false);
-    let mut kernel_b = Kernel::new(concepts_root.clone(), Some("MiddleKernel".to_string()), false);
-    let mut kernel_c = Kernel::new(concepts_root.clone(), Some("TerminalKernel".to_string()), false);
+    let mut kernel_a = Kernel::new(project_root.clone(), Some("OriginKernel".to_string()), false);
+    let mut kernel_b = Kernel::new(project_root.clone(), Some("MiddleKernel".to_string()), false);
+    let mut kernel_c = Kernel::new(project_root.clone(), Some("TerminalKernel".to_string()), false);
 
     kernel_a.bootstrap("OriginKernel").await.unwrap();
     kernel_b.bootstrap("MiddleKernel").await.unwrap();
@@ -2352,7 +2353,7 @@ async fn test_error_bubbling_propagate_to_origin() {
     });
 
     // C emits error back to A
-    let error_tx = kernel_c.emit("OriginKernel", error_response.clone()).await.unwrap();
+    let _error_tx = kernel_c.emit("OriginKernel", error_response.clone()).await.unwrap();
 
     // Verify A received error notification
     let inbox_a = kernel_a_dir.join("queue/inbox");
@@ -2386,7 +2387,8 @@ async fn test_error_bubbling_propagate_to_origin() {
 #[tokio::test]
 async fn test_error_bubbling_multiple_parallel_errors() {
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = temp_dir.path().to_path_buf();
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
 
     // Create coordinator and 4 worker kernels
     let coordinator_dir = concepts_root.join("Coordinator");
@@ -2394,18 +2396,14 @@ async fn test_error_bubbling_multiple_parallel_errors() {
         .map(|i| concepts_root.join(format!("Worker{}", i)))
         .collect();
 
-    fs::create_dir_all(coordinator_dir.join("queue/inbox")).unwrap();
-    fs::create_dir_all(coordinator_dir.join("queue/errors")).unwrap();
-    create_test_ontology(&coordinator_dir, "Coordinator");
+    create_test_ontology(&project_root, "Coordinator");
 
     for (i, dir) in worker_dirs.iter().enumerate() {
-        fs::create_dir_all(dir.join("queue/inbox")).unwrap();
-        fs::create_dir_all(dir.join("queue/errors")).unwrap();
-        create_test_ontology(dir, &format!("Worker{}", i + 1));
+        create_test_ontology(&project_root, &format!("Worker{}", i + 1));
     }
 
     // Initialize coordinator
-    let mut coordinator = Kernel::new(concepts_root.clone(), Some("Coordinator".to_string()), false);
+    let mut coordinator = Kernel::new(project_root.clone(), Some("Coordinator".to_string()), false);
     coordinator.bootstrap("Coordinator").await.unwrap();
 
     // Coordinator fans out to all workers
@@ -2503,7 +2501,8 @@ async fn test_error_bubbling_multiple_parallel_errors() {
 #[tokio::test]
 async fn test_partial_failure_fork_join_one_path_fails() {
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = temp_dir.path().to_path_buf();
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
 
     // Create fork-join pattern: Source -> PathA + PathB -> Merger
     let source_dir = concepts_root.join("ForkSource");
@@ -2512,15 +2511,13 @@ async fn test_partial_failure_fork_join_one_path_fails() {
     let merger_dir = concepts_root.join("Merger");
 
     for dir in [&source_dir, &path_a_dir, &path_b_dir, &merger_dir] {
-        fs::create_dir_all(dir.join("queue/inbox")).unwrap();
-        fs::create_dir_all(dir.join("queue/errors")).unwrap();
-        create_test_ontology(dir, &dir.file_name().unwrap().to_string_lossy());
+        create_test_ontology(&project_root, &dir.file_name().unwrap().to_string_lossy());
     }
 
     // Initialize kernels
-    let mut source = Kernel::new(concepts_root.clone(), Some("ForkSource".to_string()), false);
-    let mut path_a = Kernel::new(concepts_root.clone(), Some("PathA".to_string()), false);
-    let mut path_b = Kernel::new(concepts_root.clone(), Some("PathB".to_string()), false);
+    let mut source = Kernel::new(project_root.clone(), Some("ForkSource".to_string()), false);
+    let mut path_a = Kernel::new(project_root.clone(), Some("PathA".to_string()), false);
+    let mut path_b = Kernel::new(project_root.clone(), Some("PathB".to_string()), false);
 
     source.bootstrap("ForkSource").await.unwrap();
     path_a.bootstrap("PathA").await.unwrap();
@@ -2529,7 +2526,7 @@ async fn test_partial_failure_fork_join_one_path_fails() {
     // Fork: Source emits to both paths
     let fork_id = format!("fork-{}", Utc::now().timestamp());
 
-    let tx_a = source.emit("PathA", json!({
+    let _tx_a = source.emit("PathA", json!({
         "fork_id": fork_id,
         "path": "A",
         "data": "processing_a"
@@ -2542,7 +2539,7 @@ async fn test_partial_failure_fork_join_one_path_fails() {
     })).await.unwrap();
 
     // PathA completes successfully and emits to Merger
-    let merge_a = path_a.emit("Merger", json!({
+    let _merge_a = path_a.emit("Merger", json!({
         "fork_id": fork_id,
         "path": "A",
         "result": "success",
@@ -2567,7 +2564,7 @@ spec:
 "#;
     fs::write(path_b_dir.join("conceptkernel.yaml"), restrictive_ontology).unwrap();
 
-    let mut path_b_restricted = Kernel::new(concepts_root.clone(), Some("PathB".to_string()), true);
+    let mut path_b_restricted = Kernel::new(project_root.clone(), Some("PathB".to_string()), true);
     path_b_restricted.bootstrap("PathB").await.unwrap();
 
     let result_b = path_b_restricted.emit("Merger", json!({
@@ -2618,7 +2615,8 @@ spec:
 #[tokio::test]
 async fn test_partial_failure_compensation_transaction() {
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = temp_dir.path().to_path_buf();
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
 
     // Create transaction chain: Client -> Service1 -> Service2 (failure) -> Service1 (compensate)
     let client_dir = concepts_root.join("TransactionClient");
@@ -2626,15 +2624,13 @@ async fn test_partial_failure_compensation_transaction() {
     let service2_dir = concepts_root.join("Service2");
 
     for dir in [&client_dir, &service1_dir, &service2_dir] {
-        fs::create_dir_all(dir.join("queue/inbox")).unwrap();
-        fs::create_dir_all(dir.join("queue/compensation")).unwrap();
-        create_test_ontology(dir, &dir.file_name().unwrap().to_string_lossy());
+        create_test_ontology(&project_root, &dir.file_name().unwrap().to_string_lossy());
     }
 
     // Initialize kernels
-    let mut client = Kernel::new(concepts_root.clone(), Some("TransactionClient".to_string()), false);
-    let mut service1 = Kernel::new(concepts_root.clone(), Some("Service1".to_string()), false);
-    let mut service2 = Kernel::new(concepts_root.clone(), Some("Service2".to_string()), false);
+    let mut client = Kernel::new(project_root.clone(), Some("TransactionClient".to_string()), false);
+    let mut service1 = Kernel::new(project_root.clone(), Some("Service1".to_string()), false);
+    let mut service2 = Kernel::new(project_root.clone(), Some("Service2".to_string()), false);
 
     client.bootstrap("TransactionClient").await.unwrap();
     service1.bootstrap("Service1").await.unwrap();
@@ -2674,7 +2670,7 @@ async fn test_partial_failure_compensation_transaction() {
     ).unwrap();
 
     // Step 4: Service2 triggers compensation by emitting rollback to Service1
-    let compensation_tx = service2.emit("Service1", json!({
+    let _compensation_tx = service2.emit("Service1", json!({
         "transaction_id": tx_id,
         "operation": "compensate",
         "original_tx": tx1,
@@ -2707,7 +2703,7 @@ async fn test_partial_failure_compensation_transaction() {
     assert!(found_compensation, "Service1 should receive compensation request");
 
     // Step 5: Service1 performs compensation and notifies Client
-    let compensation_complete = service1.emit("TransactionClient", json!({
+    let _compensation_complete = service1.emit("TransactionClient", json!({
         "transaction_id": tx_id,
         "status": "compensated",
         "original_operation": "reserve_resource",
@@ -2742,7 +2738,8 @@ async fn test_partial_failure_compensation_transaction() {
 #[tokio::test]
 async fn test_partial_failure_graceful_degradation() {
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = temp_dir.path().to_path_buf();
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
 
     // Create aggregator pattern: Aggregator -> 3 data sources -> Aggregator (results)
     let aggregator_dir = concepts_root.join("Aggregator");
@@ -2750,16 +2747,14 @@ async fn test_partial_failure_graceful_degradation() {
         .map(|i| concepts_root.join(format!("DataSource{}", i)))
         .collect();
 
-    fs::create_dir_all(aggregator_dir.join("queue/inbox")).unwrap();
-    create_test_ontology(&aggregator_dir, "Aggregator");
+    create_test_ontology(&project_root, "Aggregator");
 
     for (i, dir) in source_dirs.iter().enumerate() {
-        fs::create_dir_all(dir.join("queue/inbox")).unwrap();
-        create_test_ontology(dir, &format!("DataSource{}", i + 1));
+        create_test_ontology(&project_root, &format!("DataSource{}", i + 1));
     }
 
     // Initialize aggregator
-    let mut aggregator = Kernel::new(concepts_root.clone(), Some("Aggregator".to_string()), false);
+    let mut aggregator = Kernel::new(project_root.clone(), Some("Aggregator".to_string()), false);
     aggregator.bootstrap("Aggregator").await.unwrap();
 
     // Aggregator requests data from all sources
@@ -2774,7 +2769,7 @@ async fn test_partial_failure_graceful_degradation() {
     }
 
     // DataSource1 responds successfully
-    let mut source1 = Kernel::new(concepts_root.clone(), Some("DataSource1".to_string()), false);
+    let mut source1 = Kernel::new(project_root.clone(), Some("DataSource1".to_string()), false);
     source1.emit("Aggregator", json!({
         "request_id": request_id,
         "source_id": 1,
@@ -2786,7 +2781,7 @@ async fn test_partial_failure_graceful_degradation() {
     // No emission from DataSource2
 
     // DataSource3 responds successfully
-    let mut source3 = Kernel::new(concepts_root.clone(), Some("DataSource3".to_string()), false);
+    let mut source3 = Kernel::new(project_root.clone(), Some("DataSource3".to_string()), false);
     source3.emit("Aggregator", json!({
         "request_id": request_id,
         "source_id": 3,
@@ -2811,7 +2806,7 @@ async fn test_partial_failure_graceful_degradation() {
 
         if job["payload"]["status"] == "success" && job["payload"]["request_id"] == request_id {
             successful_responses += 1;
-            if let Some(data) = job["payload"]["data"].as_array() {
+            if let Some(_data) = job["payload"]["data"].as_array() {
                 response_data.push(job["payload"]["source_id"].as_i64().unwrap());
             }
         }
@@ -2829,7 +2824,8 @@ async fn test_partial_failure_graceful_degradation() {
 #[tokio::test]
 async fn test_rollback_propagation_across_chain() {
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = temp_dir.path().to_path_buf();
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
 
     // Create transaction chain: Coordinator -> Step1 -> Step2 -> Step3 (fail) -> rollback
     let coordinator_dir = concepts_root.join("TxCoordinator");
@@ -2838,16 +2834,14 @@ async fn test_rollback_propagation_across_chain() {
     let step3_dir = concepts_root.join("TxStep3");
 
     for dir in [&coordinator_dir, &step1_dir, &step2_dir, &step3_dir] {
-        fs::create_dir_all(dir.join("queue/inbox")).unwrap();
-        fs::create_dir_all(dir.join("queue/rollback")).unwrap();
-        create_test_ontology(dir, &dir.file_name().unwrap().to_string_lossy());
+        create_test_ontology(&project_root, &dir.file_name().unwrap().to_string_lossy());
     }
 
     // Initialize all kernels
-    let mut coordinator = Kernel::new(concepts_root.clone(), Some("TxCoordinator".to_string()), false);
-    let mut step1 = Kernel::new(concepts_root.clone(), Some("TxStep1".to_string()), false);
-    let mut step2 = Kernel::new(concepts_root.clone(), Some("TxStep2".to_string()), false);
-    let mut step3 = Kernel::new(concepts_root.clone(), Some("TxStep3".to_string()), false);
+    let mut coordinator = Kernel::new(project_root.clone(), Some("TxCoordinator".to_string()), false);
+    let mut step1 = Kernel::new(project_root.clone(), Some("TxStep1".to_string()), false);
+    let mut step2 = Kernel::new(project_root.clone(), Some("TxStep2".to_string()), false);
+    let mut step3 = Kernel::new(project_root.clone(), Some("TxStep3".to_string()), false);
 
     coordinator.bootstrap("TxCoordinator").await.unwrap();
     step1.bootstrap("TxStep1").await.unwrap();
@@ -2971,7 +2965,8 @@ async fn test_rollback_propagation_across_chain() {
 #[tokio::test]
 async fn test_rollback_propagation_partial_commit() {
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = temp_dir.path().to_path_buf();
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
 
     // Create multi-stage transaction with partial success
     let orchestrator_dir = concepts_root.join("Orchestrator");
@@ -2979,18 +2974,14 @@ async fn test_rollback_propagation_partial_commit() {
         .map(|i| concepts_root.join(format!("Stage{}", i)))
         .collect();
 
-    fs::create_dir_all(orchestrator_dir.join("queue/inbox")).unwrap();
-    create_test_ontology(&orchestrator_dir, "Orchestrator");
+    create_test_ontology(&project_root, "Orchestrator");
 
     for (i, dir) in stage_dirs.iter().enumerate() {
-        fs::create_dir_all(dir.join("queue/inbox")).unwrap();
-        fs::create_dir_all(dir.join("queue/committed")).unwrap();
-        fs::create_dir_all(dir.join("queue/rollback")).unwrap();
-        create_test_ontology(dir, &format!("Stage{}", i + 1));
+        create_test_ontology(&project_root, &format!("Stage{}", i + 1));
     }
 
     // Initialize orchestrator
-    let mut orchestrator = Kernel::new(concepts_root.clone(), Some("Orchestrator".to_string()), false);
+    let mut orchestrator = Kernel::new(project_root.clone(), Some("Orchestrator".to_string()), false);
     orchestrator.bootstrap("Orchestrator").await.unwrap();
 
     // Start transaction
@@ -3151,7 +3142,8 @@ async fn test_rollback_propagation_partial_commit() {
 #[tokio::test]
 async fn test_compensation_undo_operations() {
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = temp_dir.path().to_path_buf();
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
 
     // Create service chain with compensation: Client -> ServiceA -> ServiceB (fail) -> ServiceA (undo)
     let client_dir = concepts_root.join("CompensationClient");
@@ -3159,15 +3151,13 @@ async fn test_compensation_undo_operations() {
     let service_b_dir = concepts_root.join("ServiceB");
 
     for dir in [&client_dir, &service_a_dir, &service_b_dir] {
-        fs::create_dir_all(dir.join("queue/inbox")).unwrap();
-        fs::create_dir_all(dir.join("queue/compensation")).unwrap();
-        create_test_ontology(dir, &dir.file_name().unwrap().to_string_lossy());
+        create_test_ontology(&project_root, &dir.file_name().unwrap().to_string_lossy());
     }
 
     // Initialize kernels
-    let mut client = Kernel::new(concepts_root.clone(), Some("CompensationClient".to_string()), false);
-    let mut service_a = Kernel::new(concepts_root.clone(), Some("ServiceA".to_string()), false);
-    let mut service_b = Kernel::new(concepts_root.clone(), Some("ServiceB".to_string()), false);
+    let mut client = Kernel::new(project_root.clone(), Some("CompensationClient".to_string()), false);
+    let mut service_a = Kernel::new(project_root.clone(), Some("ServiceA".to_string()), false);
+    let mut service_b = Kernel::new(project_root.clone(), Some("ServiceB".to_string()), false);
 
     client.bootstrap("CompensationClient").await.unwrap();
     service_a.bootstrap("ServiceA").await.unwrap();
@@ -3270,7 +3260,8 @@ async fn test_compensation_undo_operations() {
 #[tokio::test]
 async fn test_compensation_saga_pattern() {
     let temp_dir = TempDir::new().unwrap();
-    let concepts_root = temp_dir.path().to_path_buf();
+    let project_root = temp_dir.path().to_path_buf();
+    let concepts_root = project_root.join("concepts");
 
     // Create saga pattern: Coordinator -> OrderService -> PaymentService -> InventoryService (fail) -> compensations
     let coordinator_dir = concepts_root.join("SagaCoordinator");
@@ -3279,16 +3270,14 @@ async fn test_compensation_saga_pattern() {
     let inventory_dir = concepts_root.join("InventoryService");
 
     for dir in [&coordinator_dir, &order_dir, &payment_dir, &inventory_dir] {
-        fs::create_dir_all(dir.join("queue/inbox")).unwrap();
-        fs::create_dir_all(dir.join("queue/saga")).unwrap();
-        create_test_ontology(dir, &dir.file_name().unwrap().to_string_lossy());
+        create_test_ontology(&project_root, &dir.file_name().unwrap().to_string_lossy());
     }
 
     // Initialize all kernels
-    let mut coordinator = Kernel::new(concepts_root.clone(), Some("SagaCoordinator".to_string()), false);
-    let mut order_svc = Kernel::new(concepts_root.clone(), Some("OrderService".to_string()), false);
-    let mut payment_svc = Kernel::new(concepts_root.clone(), Some("PaymentService".to_string()), false);
-    let mut inventory_svc = Kernel::new(concepts_root.clone(), Some("InventoryService".to_string()), false);
+    let mut coordinator = Kernel::new(project_root.clone(), Some("SagaCoordinator".to_string()), false);
+    let mut order_svc = Kernel::new(project_root.clone(), Some("OrderService".to_string()), false);
+    let mut payment_svc = Kernel::new(project_root.clone(), Some("PaymentService".to_string()), false);
+    let mut inventory_svc = Kernel::new(project_root.clone(), Some("InventoryService".to_string()), false);
 
     coordinator.bootstrap("SagaCoordinator").await.unwrap();
     order_svc.bootstrap("OrderService").await.unwrap();

@@ -11,7 +11,7 @@ use crate::errors::{CkpError, Result};
 use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// ContinuantTracker - Tracks BFO Continuants (persistent entities)
 pub struct ContinuantTracker {

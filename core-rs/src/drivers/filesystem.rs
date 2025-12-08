@@ -173,8 +173,6 @@ impl FileSystemDriver {
 
         #[cfg(unix)]
         {
-            use std::os::unix::fs::OpenOptionsExt;
-
             // Open with append mode
             let mut file = OpenOptions::new()
                 .create(true)
@@ -548,6 +546,93 @@ impl FileSystemDriver {
 
         pathdiff::diff_paths(source, target_dir)
             .ok_or_else(|| CkpError::Path("Failed to calculate relative path".to_string()))
+    }
+
+    /// Ensure complete kernel directory structure exists
+    ///
+    /// Creates all required directories for a kernel including:
+    /// - queue subdirectories (inbox, staging, ready, archive, edges)
+    /// - storage directory
+    /// - tool directory
+    /// - logs directory
+    ///
+    /// This method is intended for test setup and kernel initialization.
+    pub fn ensure_kernel_structure(&self) -> Result<()> {
+        let kernel_dir = self.get_kernel_dir();
+
+        // Create all required directories
+        fs::create_dir_all(kernel_dir.join("queue/inbox"))?;
+        fs::create_dir_all(kernel_dir.join("queue/staging"))?;
+        fs::create_dir_all(kernel_dir.join("queue/ready"))?;
+        fs::create_dir_all(kernel_dir.join("queue/archive"))?;
+        fs::create_dir_all(kernel_dir.join("queue/edges"))?;
+        fs::create_dir_all(kernel_dir.join("storage"))?;
+        fs::create_dir_all(kernel_dir.join("tool"))?;
+        fs::create_dir_all(kernel_dir.join("logs"))?;
+
+        Ok(())
+    }
+
+    /// Write ontology files (conceptkernel.yaml and ontology.ttl)
+    ///
+    /// Creates the required ontology configuration files for a kernel.
+    /// This method is primarily for test setup.
+    pub fn write_ontology(&self, yaml_content: &str, ttl_content: &str) -> Result<()> {
+        let kernel_dir = self.get_kernel_dir();
+
+        fs::write(kernel_dir.join("conceptkernel.yaml"), yaml_content)?;
+        fs::write(kernel_dir.join("ontology.ttl"), ttl_content)?;
+
+        Ok(())
+    }
+
+    /// Write arbitrary file within kernel directory
+    ///
+    /// Provides controlled file write access for tests. Automatically
+    /// creates parent directories if needed.
+    pub fn write_file(&self, relative_path: &str, content: &str) -> Result<()> {
+        let kernel_dir = self.get_kernel_dir();
+        let file_path = kernel_dir.join(relative_path);
+
+        // Ensure parent directory exists
+        if let Some(parent) = file_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        fs::write(file_path, content)?;
+
+        Ok(())
+    }
+
+    /// Read arbitrary file within kernel directory
+    ///
+    /// Provides controlled file read access for tests.
+    pub fn read_file(&self, relative_path: &str) -> Result<String> {
+        let kernel_dir = self.get_kernel_dir();
+        let file_path = kernel_dir.join(relative_path);
+
+        let content = fs::read_to_string(file_path)?;
+
+        Ok(content)
+    }
+
+    /// Create directory within kernel structure
+    ///
+    /// Provides controlled directory creation for tests.
+    pub fn create_directory(&self, relative_path: &str) -> Result<()> {
+        let kernel_dir = self.get_kernel_dir();
+        let dir_path = kernel_dir.join(relative_path);
+
+        fs::create_dir_all(dir_path)?;
+
+        Ok(())
+    }
+
+    /// Check if a file exists within kernel directory
+    pub fn file_exists(&self, relative_path: &str) -> bool {
+        let kernel_dir = self.get_kernel_dir();
+        let file_path = kernel_dir.join(relative_path);
+        file_path.exists()
     }
 }
 
@@ -2159,7 +2244,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         setup_test_kernel(&temp_dir, "RbacOverheadKernel");
 
-        let driver = FileSystemDriver::new(
+        let _driver = FileSystemDriver::new(
             temp_dir.path().to_path_buf(),
             "RbacOverheadKernel".to_string(),
         );

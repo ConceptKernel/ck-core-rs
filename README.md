@@ -140,25 +140,25 @@ Each phase is recorded. Each record is provable. The filesystem itself becomes t
 
 ## Empty Canvas, Infinite Potential
 
-ConceptKernel ships as an **empty canvas organism**. When you install `ckr`, you receive the runtime and the protocol — but no concepts. You are free to compose your system exactly as you need it.
+ConceptKernel ships as an **empty canvas organism**. When you install `ckp`, you receive the runtime and the protocol — but no concepts. You are free to compose your system exactly as you need it.
 
 ```bash
 # Fresh installation - empty project
-ckr project create my-system
+ckp project create my-system
 cd my-system
 
 # Your system is empty. The canvas awaits.
-ckr concept list
+ckp concept list
 # (no concepts loaded)
 
 # Now choose your capabilities
-ckr concept load System.Gateway           # If you need HTTP gateway
-ckr concept load System.Wss               # If you need WebSocket collaboration
-ckr concept load System.Oidc.Provider     # If you need authentication
-ckr concept load ConceptKernel.Consensus  # If you need governance
+ckp concept load System.Gateway           # If you need HTTP gateway
+ckp concept load System.Wss               # If you need WebSocket collaboration
+ckp concept load System.Oidc.Provider     # If you need authentication
+ckp concept load ConceptKernel.Consensus  # If you need governance
 
 # Or load nothing and build your own from scratch
-ckr concept create MyDomain.MyKernel
+ckp concept create MyDomain.MyKernel
 ```
 
 **Bootstrap Workflows Available:**
@@ -183,7 +183,7 @@ This is not a framework. This is a protocol. The runtime watches. The filesystem
 curl -sSL https://raw.githubusercontent.com/ConceptKernel/ck-core-rs/main/install.sh | sh
 ```
 
-This automatically detects your platform and installs the latest version of `ckr`.
+This automatically detects your platform and installs the latest version of `ckp`.
 
 ### Docker
 
@@ -194,7 +194,7 @@ docker pull conceptkernel/ck-core-rs:latest
 # Or specific version
 docker pull conceptkernel/ck-core-rs:v1.3.18
 
-# Run ckr
+# Run ckp
 docker run --rm conceptkernel/ck-core-rs:latest --version
 ```
 
@@ -204,9 +204,9 @@ Download pre-built binaries from [Releases](https://github.com/ConceptKernel/ck-
 
 ```bash
 # Example for Linux x86_64
-curl -L https://github.com/ConceptKernel/ck-core-rs/releases/download/v1.3.18/ckr-v1.3.18-x86_64-linux -o ckr
-chmod +x ckr
-sudo mv ckr /usr/local/bin/
+curl -L https://github.com/ConceptKernel/ck-core-rs/releases/download/v1.3.18/ckp-v1.3.18-x86_64-linux -o ckp
+chmod +x ckp
+sudo mv ckp /usr/local/bin/
 ```
 
 ### From Source
@@ -214,9 +214,9 @@ sudo mv ckr /usr/local/bin/
 ```bash
 git clone https://github.com/ConceptKernel/ck-core-rs.git
 cd ck-core-rs
-cargo build --release --bin ckr
+cargo build --release --bin ckp
 
-# Binary at: target/release/ckr
+# Binary at: target/release/ckp
 # Add to PATH or symlink to /usr/local/bin/
 ```
 
@@ -323,9 +323,9 @@ ConceptKernel Rust Runtime (v1.3.18):
 ## Command Reference
 
 ```
-ckr v1.3.18 - ConceptKernel Rust Runtime
+ckp v1.3.18 - ConceptKernel Protocol CLI
 
-ckr
+ckp
 ├── concept                # Manage concepts (kernels)
 │   ├── list              # List loaded concepts
 │   ├── create <name>     # Create new concept from template
@@ -369,23 +369,23 @@ ckr
 
 ```bash
 # Create and start a kernel
-ckr concept create Recipes.BakeCake
-ckr concept start Recipes.BakeCake
+ckp concept create Recipes.BakeCake
+ckp concept start Recipes.BakeCake
 
 # Connect two kernels with typed edge
-ckr edge create Recipes.MixIngredients Recipes.BakeCake
-ckr edge create System.Consensus System.Proof REQUIRES
+ckp edge create Recipes.MixIngredients Recipes.BakeCake
+ckp edge create System.Consensus System.Proof REQUIRES
 
 # Monitor the system
-ckr status
+ckp status
 
 # Emit an event
-ckr emit Recipes.BakeCake '{"temperature": 350, "duration": 45}'
+ckp emit Recipes.BakeCake '{"temperature": 350, "duration": 45}'
 
 # Package management
-ckr concept export Recipes.BakeCake
-ckr package import ./recipes-bakecake-v1.tar.gz
-ckr concept load Recipes.BakeCake
+ckp concept export Recipes.BakeCake
+ckp package import ./recipes-bakecake-v1.tar.gz
+ckp concept load Recipes.BakeCake
 ```
 
 ---
@@ -533,13 +533,13 @@ The system speaks RDF. Ask in SPARQL:
 
 ```bash
 # Query your instances
-ckr query "ckp://Recipes.BakeCake:v0.1/instances" --limit 10
+ckp query "ckp://Recipes.BakeCake:v0.1/instances" --limit 10
 
 # Query incoming edges
-ckr query "ckp://Recipes.BakeCake:v0.1/edges/incoming"
+ckp query "ckp://Recipes.BakeCake:v0.1/edges/incoming"
 
 # Query all PRODUCES edges
-ckr query --sparql "
+ckp query --sparql "
   SELECT ?edge WHERE {
     ?edge rdf:type ckp:Edge .
     ?edge ckp:predicate ckpr:PRODUCES .
@@ -547,7 +547,7 @@ ckr query --sparql "
 "
 
 # Query provenance
-ckr query "ckp://Instance#1732716622-baking/provenance" --show-graph
+ckp query "ckp://Instance#1732716622-baking/provenance" --show-graph
 ```
 
 The truth is not hidden. The truth is queryable.
@@ -615,7 +615,7 @@ The truth is not hidden. The truth is **queryable**.
 ```
 ck-core-rs/
 ├── core-rs/              # Rust runtime implementation
-│   ├── src/bin/          # ckr (CLI) + ckr-governor (watcher)
+│   ├── src/bin/          # ckp (CLI) + ckp-governor (watcher)
 │   ├── src/kernel/       # Lifecycle, PID tracking, multi-project
 │   ├── src/edge/         # Edge management, RBAC enforcement
 │   ├── src/ontology/     # Parser, validator, CLI discovery

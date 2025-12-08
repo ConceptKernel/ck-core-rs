@@ -5,7 +5,7 @@
 use crate::errors::{CkpError, Result};
 use crate::ontology::OntologyReader;
 use crate::drivers::{GitDriver, VersionDriver};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 /// Kernel builder that uses proper ConceptKernel abstractions

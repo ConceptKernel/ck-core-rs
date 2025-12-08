@@ -57,6 +57,22 @@ impl ConceptKernelGovernor {
         eprintln!("[Governor] Initializing for kernel: {}", kernel_name_or_urn);
         eprintln!("[Governor] Project root: {}", root.display());
 
+        // Security check: warn if running as root
+        #[cfg(unix)]
+        {
+            let current_uid = unsafe { libc::getuid() };
+            if current_uid == 0 {
+                eprintln!("╔═══════════════════════════════════════════════════════════════╗");
+                eprintln!("║ ⚠️  WARNING: GOVERNOR RUNNING AS ROOT                        ║");
+                eprintln!("║                                                               ║");
+                eprintln!("║ This is a SECURITY RISK and should be avoided!               ║");
+                eprintln!("║ Kernel: {:<51} ║", kernel_name_or_urn);
+                eprintln!("║                                                               ║");
+                eprintln!("║ Please run governors as a normal user, not root.             ║");
+                eprintln!("╚═══════════════════════════════════════════════════════════════╝");
+            }
+        }
+
         // Parse URN if provided
         let kernel_name = if kernel_name_or_urn.starts_with("ckp://") {
             let parsed = UrnResolver::parse(kernel_name_or_urn)?;
@@ -224,7 +240,7 @@ impl ConceptKernelGovernor {
 
         let governor = Self {
             kernel_name: kernel_name.clone(),
-            root,
+            root: kernel_dir,
             kernel_type: kernel_type.clone(),
             tool_path,
             tool_command,
@@ -551,6 +567,14 @@ impl ConceptKernelGovernor {
                                 "[ConceptKernel] [{}] {} exited successfully (PID: {})",
                                 self.kernel_name, tool_name, pid
                             ));
+
+                            // Post-processing: Create edge symlinks for notification_contract
+                            if let Err(e) = self.post_process_tool_output() {
+                                self.log(&format!(
+                                    "[ConceptKernel] [{}] Warning: Post-processing failed: {}",
+                                    self.kernel_name, e
+                                ));
+                            }
                         } else {
                             self.log(&format!(
                                 "[ConceptKernel] [{}] {} exited with code {:?} (PID: {})",
@@ -582,18 +606,12 @@ impl ConceptKernelGovernor {
 
     /// Get inbox path
     fn get_inbox_path(&self) -> PathBuf {
-        self.root
-            .join("concepts")
-            .join(&self.kernel_name)
-            .join("queue/inbox")
+        self.root.join("queue/inbox")
     }
 
     /// Get edges path
     fn get_edges_path(&self) -> PathBuf {
-        self.root
-            .join("concepts")
-            .join(&self.kernel_name)
-            .join("queue/edges")
+        self.root.join("queue/edges")
     }
 
     /// Log a message
@@ -651,12 +669,225 @@ impl ConceptKernelGovernor {
             Err("Ontology library not loaded".to_string())
         }
     }
+
+    /// Post-process tool output: create edge symlinks for notification_contract
+    ///
+    /// After a tool exits successfully, this method:
+    /// 1. Reads notification_contract from conceptkernel.yaml
+    /// 2. For each target kernel, finds the corresponding edge
+    /// 3. Creates symlinks in edge inboxes for all storage instances
+    fn post_process_tool_output(&self) -> Result<()> {
+        self.log(&format!(
+            "[ConceptKernel] [{}] Starting post-processing...",
+            self.kernel_name
+        ));
+
+        // Read notification_contract from ontology
+        // self.root is kernel_dir (/project/concepts/KernelName)
+        // Go up two levels to get project root: parent().parent() = /project
+        let project_root = self.root.parent().unwrap().parent().unwrap().to_path_buf();
+        let ontology_reader = OntologyReader::new(project_root);
+        let notification_contracts = ontology_reader.read_notification_contract(&self.kernel_name)?;
+
+        if notification_contracts.is_empty() {
+            self.log(&format!(
+                "[ConceptKernel] [{}] No notification_contract defined, skipping edge notifications",
+                self.kernel_name
+            ));
+            return Ok(());
+        }
+
+        // Read queue_contract.edges to find edge URNs
+        let queue_contract = ontology_reader
+            .read_queue_contract(&self.kernel_name)?
+            .ok_or_else(|| CkpError::Governor("No queue_contract found".to_string()))?;
+
+        let edges = queue_contract.edges.unwrap_or_default();
+
+        // Get all .inst files from storage/
+        let storage_dir = self.root.join("storage");
+        if !storage_dir.exists() {
+            self.log(&format!(
+                "[ConceptKernel] [{}] No storage directory, skipping notifications",
+                self.kernel_name
+            ));
+            return Ok(());
+        }
+
+        let inst_files: Vec<PathBuf> = fs::read_dir(&storage_dir)
+            .map_err(|e| CkpError::IoError(format!("Failed to read storage directory: {}", e)))?
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|s| s.to_str()) == Some("inst"))
+            .collect();
+
+        if inst_files.is_empty() {
+            self.log(&format!(
+                "[ConceptKernel] [{}] No instances in storage, skipping notifications",
+                self.kernel_name
+            ));
+            return Ok(());
+        }
+
+        self.log(&format!(
+            "[ConceptKernel] [{}] Found {} instance(s) in storage",
+            self.kernel_name,
+            inst_files.len()
+        ));
+
+        // Process each notification target
+        for notification in &notification_contracts {
+            self.log(&format!(
+                "[ConceptKernel] [{}] Processing notification to {}",
+                self.kernel_name, notification.target_kernel
+            ));
+
+            // Find the edge URN that targets this kernel
+            let edge_urn = self.find_edge_for_target(&edges, &notification.target_kernel)?;
+
+            // Create symlinks for all instances using the full edge URN
+            let edge_dir = self.create_edge_symlinks(&inst_files, &edge_urn)?;
+
+            self.log(&format!(
+                "[ConceptKernel] [{}] Created {} symlink(s) in .edges/{}/queue/inbox/",
+                self.kernel_name,
+                inst_files.len(),
+                edge_dir
+            ));
+        }
+
+        self.log(&format!(
+            "[ConceptKernel] [{}] Post-processing completed successfully",
+            self.kernel_name
+        ));
+
+        Ok(())
+    }
+
+    /// Find edge URN that targets a specific kernel
+    fn find_edge_for_target(
+        &self,
+        edges: &[crate::ontology::config_reader::EdgeEntry],
+        target_kernel: &str,
+    ) -> Result<String> {
+        for edge in edges {
+            let urn = match edge {
+                crate::ontology::config_reader::EdgeEntry::Urn(u) => u.clone(),
+                crate::ontology::config_reader::EdgeEntry::Object(obj) => {
+                    obj.edge_urn.clone().or_else(|| obj.urn.clone()).unwrap_or_default()
+                }
+            };
+
+            // Check if this edge targets the specified kernel
+            // Edge format: ckp://Edge.PREDICATE.Source-to-Destination:version
+            if urn.contains(target_kernel) || urn.contains(&format!("-to-{}", target_kernel)) {
+                return Ok(urn);
+            }
+        }
+
+        Err(CkpError::Governor(format!(
+            "No edge found for target kernel: {}",
+            target_kernel
+        )))
+    }
+
+    /// Parse edge URN to extract predicate
+    ///
+    /// Example: ckp://Edge.REQUIRES.Consensus-to-LinkML:v1.3.12 -> REQUIRES
+    fn parse_edge_predicate(&self, edge_urn: &str) -> Result<String> {
+        // Format: ckp://Edge.PREDICATE.Source-to-Destination:version
+        let parts: Vec<&str> = edge_urn.split('.').collect();
+
+        if parts.len() >= 3 && parts[0] == "ckp://Edge" {
+            return Ok(parts[1].to_string());
+        }
+
+        Err(CkpError::Governor(format!(
+            "Invalid edge URN format: {}",
+            edge_urn
+        )))
+    }
+
+    /// Create symlinks in edge inbox for notification routing
+    ///
+    /// Uses UrnResolver to translate edge URN to correct filesystem path.
+    /// Respects edge_versioning flag from .ckproject.
+    ///
+    /// Creates symlinks from storage/*.inst to .edges/{PREDICATE.Source-to-Target}/queue/inbox/*.inst
+    ///
+    /// Returns the edge directory name for logging.
+    fn create_edge_symlinks(&self, inst_files: &[PathBuf], edge_urn: &str) -> Result<String> {
+        use crate::urn::UrnResolver;
+
+        // Parse edge URN using UrnResolver (handles edge_versioning automatically)
+        let parsed = UrnResolver::parse_edge_urn(edge_urn)
+            .map_err(|e| CkpError::Governor(format!("Failed to parse edge URN '{}': {}", edge_urn, e)))?;
+
+        // Get edge directory name from parsed URN (respects edge_versioning from .ckproject)
+        let edge_dir_name = parsed.get_edge_dir();
+
+        // Edge inbox path: .edges/{PREDICATE.Source-to-Target}/queue/inbox/
+        let project_root = self.root.parent().unwrap();
+        let edge_inbox = project_root
+            .join(".edges")
+            .join(&edge_dir_name)
+            .join("queue")
+            .join("inbox");
+
+        // Create edge inbox directory if it doesn't exist
+        fs::create_dir_all(&edge_inbox).map_err(|e| {
+            CkpError::IoError(format!("Failed to create edge inbox directory: {}", e))
+        })?;
+
+        self.log(&format!(
+            "[ConceptKernel] [{}] Creating symlinks in {}",
+            self.kernel_name,
+            edge_inbox.display()
+        ));
+
+        // Create symlinks for each instance
+        for inst_file in inst_files {
+            let file_name = inst_file
+                .file_name()
+                .ok_or_else(|| CkpError::Governor("Invalid instance file name".to_string()))?;
+
+            let symlink_path = edge_inbox.join(file_name);
+
+            // Remove existing symlink if present
+            if symlink_path.exists() {
+                fs::remove_file(&symlink_path).ok();
+            }
+
+            // Create symlink
+            #[cfg(unix)]
+            {
+                std::os::unix::fs::symlink(inst_file, &symlink_path).map_err(|e| {
+                    CkpError::IoError(format!("Failed to create symlink: {}", e))
+                })?;
+            }
+
+            #[cfg(windows)]
+            {
+                std::os::windows::fs::symlink_file(inst_file, &symlink_path).map_err(|e| {
+                    CkpError::IoError(format!("Failed to create symlink: {}", e))
+                })?;
+            }
+
+            self.log(&format!(
+                "[ConceptKernel] [{}] Created symlink: {} -> {}",
+                self.kernel_name,
+                symlink_path.display(),
+                inst_file.display()
+            ));
+        }
+
+        Ok(edge_dir_name)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
     use tempfile::TempDir;
 
     fn create_test_kernel(temp_dir: &TempDir, kernel_name: &str, tool_type: &str) -> PathBuf {
@@ -686,7 +917,7 @@ spec:
         fs::write(kernel_dir.join("conceptkernel.yaml"), ontology).unwrap();
 
         // Create tool
-        let tool_path = if tool_type.starts_with("python:") {
+        let _tool_path = if tool_type.starts_with("python:") {
             let tool_content = r#"#!/usr/bin/env python3
 import sys
 print("Tool executed")
@@ -1067,7 +1298,7 @@ process.exit(0);
         let bad_job = inbox_path.join("malformed.job");
         fs::write(&bad_job, "not valid json {{{").unwrap();
 
-        let gov = ConceptKernelGovernor::new("PreSpawnKernel", root.clone()).unwrap();
+        let _gov = ConceptKernelGovernor::new("PreSpawnKernel", root.clone()).unwrap();
 
         // In a real implementation, pre-spawn validation would check job format
         // For now, verify that malformed jobs are detectable

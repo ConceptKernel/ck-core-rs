@@ -3,7 +3,7 @@
 FROM gcr.io/distroless/cc-debian12:nonroot
 
 # Copy pre-built binary (should be provided at build time)
-COPY ckr /usr/local/bin/ckr
+COPY ckp /usr/local/bin/ckp
 
 # Copy CA certificates for HTTPS
 COPY ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
@@ -15,5 +15,5 @@ WORKDIR /ckp
 USER nonroot:nonroot
 
 # Default command
-ENTRYPOINT ["/usr/local/bin/ckr"]
+ENTRYPOINT ["/usr/local/bin/ckp"]
 CMD ["--help"]

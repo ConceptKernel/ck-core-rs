@@ -20,7 +20,7 @@ pub struct EdgeRequestBuilder {
     root: PathBuf,
 
     /// Domain name from config
-    domain: String,
+    _domain: String,
 }
 
 /// Edge routing request structure
@@ -97,7 +97,7 @@ impl EdgeRequestBuilder {
         // Load domain from .ckproject (v1.3.16+)
         let domain = Self::load_domain_from_project(&root);
 
-        Self { root, domain }
+        Self { root, _domain: domain }
     }
 
     /// Load domain from .ckproject
@@ -365,7 +365,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let builder = EdgeRequestBuilder::new(temp_dir.path().to_path_buf());
 
-        assert_eq!(builder.domain, "Org.ConceptKernel");
+        assert_eq!(builder._domain, "Org.ConceptKernel");
     }
 
     #[test]

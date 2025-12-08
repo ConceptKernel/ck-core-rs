@@ -6,7 +6,6 @@
 // **Problem**: LLM "optimizes" port calculation without understanding protocol guarantees
 // **Solution**: Contract tests that fail with clear explanation of what's being sacrificed
 
-use ckp_core::{ProjectRegistry, ProjectInfo};
 
 /// WHY: Changed from 100 to 200 ports per slot in v1.3.16
 /// REASON: Projects were running out of ports with 100-port limit

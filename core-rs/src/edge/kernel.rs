@@ -409,45 +409,65 @@ impl EdgeKernel {
         let mut routed_paths = Vec::new();
 
         for edge in edges {
-            // Check authorization
-            if !self.is_edge_authorized(&edge.target, &edge.urn)? {
-                eprintln!(
-                    "[EdgeKernel] Edge not authorized: {} -> {}",
-                    source_kernel, edge.target
-                );
+            // Expand wildcard targets to all kernels
+            let actual_targets: Vec<String> = if edge.target == "*" {
+                // List all kernel directories
+                let concepts_dir = self.root.join("concepts");
+                if let Ok(entries) = fs::read_dir(&concepts_dir) {
+                    entries
+                        .filter_map(|entry| entry.ok())
+                        .filter(|entry| entry.path().is_dir())
+                        .filter_map(|entry| entry.file_name().to_str().map(String::from))
+                        .filter(|name| name != "*") // Skip the literal * directory
+                        .collect()
+                } else {
+                    vec![edge.target.clone()]
+                }
+            } else {
+                vec![edge.target.clone()]
+            };
 
-                // Track authorization failure
-                if let Some(tracker) = &self.process_tracker {
-                    let process_urn = tracker.generate_process_urn("EdgeRoute", tx_id);
-                    let mut failed_data = HashMap::new();
-                    failed_data.insert("target".to_string(), serde_json::json!(edge.target));
-                    failed_data.insert("reason".to_string(), serde_json::json!("not_authorized"));
-                    let _ = tracker.add_temporal_part(&process_urn, "failed", failed_data);
+            for actual_target in actual_targets {
+                // Check authorization
+                if !self.is_edge_authorized(&actual_target, &edge.urn)? {
+                    eprintln!(
+                        "[EdgeKernel] Edge not authorized: {} -> {}",
+                        source_kernel, actual_target
+                    );
+
+                    // Track authorization failure
+                    if let Some(tracker) = &self.process_tracker {
+                        let process_urn = tracker.generate_process_urn("EdgeRoute", tx_id);
+                        let mut failed_data = HashMap::new();
+                        failed_data.insert("target".to_string(), serde_json::json!(actual_target));
+                        failed_data.insert("reason".to_string(), serde_json::json!("not_authorized"));
+                        let _ = tracker.add_temporal_part(&process_urn, "failed", failed_data);
+                    }
+
+                    continue;
                 }
 
-                continue;
-            }
+                // Get target queue path
+                let target_queue = self.get_target_queue_path(&actual_target, &edge.predicate, &edge.source);
 
-            // Get target queue path
-            let target_queue = self.get_target_queue_path(&edge.target, &edge.predicate, &edge.source);
+                // Create per-edge queue if not exists
+                fs::create_dir_all(&target_queue)?;
 
-            // Create per-edge queue if not exists
-            fs::create_dir_all(&target_queue)?;
+                // Create symlink using FileSystemDriver
+                let driver = FileSystemDriver::new(self.root.clone(), actual_target.clone());
+                let symlink_path = driver.create_symlink(instance_path, &target_queue, None)?;
 
-            // Create symlink using FileSystemDriver
-            let driver = FileSystemDriver::new(self.root.clone(), edge.target.clone());
-            let symlink_path = driver.create_symlink(instance_path, &target_queue, None)?;
+                routed_paths.push(symlink_path.clone());
 
-            routed_paths.push(symlink_path.clone());
-
-            // Track successful delivery
-            if let Some(tracker) = &self.process_tracker {
-                let process_urn = tracker.generate_process_urn("EdgeRoute", tx_id);
-                let mut delivered_data = HashMap::new();
-                delivered_data.insert("target".to_string(), serde_json::json!(edge.target));
-                delivered_data.insert("predicate".to_string(), serde_json::json!(edge.predicate));
-                delivered_data.insert("symlink_path".to_string(), serde_json::json!(symlink_path.display().to_string()));
-                let _ = tracker.add_temporal_part(&process_urn, "delivered", delivered_data);
+                // Track successful delivery
+                if let Some(tracker) = &self.process_tracker {
+                    let process_urn = tracker.generate_process_urn("EdgeRoute", tx_id);
+                    let mut delivered_data = HashMap::new();
+                    delivered_data.insert("target".to_string(), serde_json::json!(actual_target));
+                    delivered_data.insert("predicate".to_string(), serde_json::json!(edge.predicate));
+                    delivered_data.insert("symlink_path".to_string(), serde_json::json!(symlink_path.display().to_string()));
+                    let _ = tracker.add_temporal_part(&process_urn, "delivered", delivered_data);
+                }
             }
         }
 
@@ -570,7 +590,7 @@ mod tests {
     #[test]
     fn test_edges_directory_creation() {
         let temp_dir = TempDir::new().unwrap();
-        let kernel = EdgeKernel::new(temp_dir.path().to_path_buf()).unwrap();
+        let _kernel = EdgeKernel::new(temp_dir.path().to_path_buf()).unwrap();
 
         let edges_dir = temp_dir.path().join("concepts").join(".edges");
         assert!(edges_dir.exists());
@@ -733,7 +753,7 @@ mod tests {
         kernel.create_edge("PRODUCES", "Source", "Target").unwrap();
 
         // Route instance
-        let paths = kernel.route_instance(&instance_dir, "Source").unwrap();
+        let _paths = kernel.route_instance(&instance_dir, "Source").unwrap();
 
         // Verify per-edge queue was created
         let target_queue = temp
@@ -1533,7 +1553,7 @@ spec:
     /// Test: Circular edge prevention with multi-hop cycles
     #[test]
     fn test_circular_edge_prevention_multi_hop() {
-        let (temp, mut kernel) = setup_test_env();
+        let (_temp, mut kernel) = setup_test_env();
 
         // Create multi-hop circular chains
         // Chain 1: A -> B -> A
@@ -1579,7 +1599,7 @@ spec:
     /// Test: Edge metadata propagation through routing
     #[test]
     fn test_edge_metadata_propagation() {
-        let (temp, mut kernel) = setup_test_env();
+        let (_temp, mut kernel) = setup_test_env();
 
         let source = "MetadataSource";
         let target = "MetadataTarget";

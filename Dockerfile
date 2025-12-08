@@ -18,14 +18,14 @@ COPY Cargo.toml Cargo.lock ./
 COPY core-rs ./core-rs/
 
 # Build release binary with optimizations and strip symbols
-RUN cargo build --release --bin ckr && \
-    strip /build/target/release/ckr
+RUN cargo build --release --bin ckp && \
+    strip /build/target/release/ckp
 
 # Runtime stage - Google Distroless (minimal glibc-based image ~20MB)
 FROM gcr.io/distroless/cc-debian12:nonroot
 
 # Copy binary from builder
-COPY --from=builder /build/target/release/ckr /usr/local/bin/ckr
+COPY --from=builder /build/target/release/ckp /usr/local/bin/ckp
 
 # Copy CA certificates for HTTPS
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
@@ -40,5 +40,5 @@ USER nonroot:nonroot
 # GitHub Actions and orchestrators will need to use HTTP/TCP checks instead
 
 # Default command - show help
-ENTRYPOINT ["/usr/local/bin/ckr"]
+ENTRYPOINT ["/usr/local/bin/ckp"]
 CMD ["--help"]

@@ -17,7 +17,6 @@ pub use api::{KernelContext, AdoptedContext, EdgeResponse};
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use tempfile::TempDir;
 
     #[test]
@@ -45,6 +44,7 @@ mod tests {
         // Verify KernelBuilder type is accessible via public API
         // We don't construct it since we don't know the constructor signature
         // Just verify the type is exported
+        #[allow(dead_code)]
         fn accepts_kernel_builder(_: KernelBuilder) {}
         // If this compiles, export works correctly
     }
@@ -55,9 +55,13 @@ mod tests {
         // We don't construct them since fields may be private
         // Just verify the types are exported
 
+        #[allow(dead_code)]
         fn accepts_kernel_status(_: KernelStatus) {}
+        #[allow(dead_code)]
         fn accepts_queue_stats(_: QueueStats) {}
+        #[allow(dead_code)]
         fn accepts_running_pids(_: RunningPids) {}
+        #[allow(dead_code)]
         fn accepts_start_result(_: StartResult) {}
 
         // If this compiles, all status types are exported correctly
@@ -66,8 +70,11 @@ mod tests {
     #[test]
     fn test_api_types_are_exported() {
         // Verify KernelContext and related API types are accessible
+        #[allow(dead_code)]
         fn accepts_kernel_context(_: KernelContext) {}
+        #[allow(dead_code)]
         fn accepts_adopted_context(_: AdoptedContext) {}
+        #[allow(dead_code)]
         fn accepts_edge_response(_: EdgeResponse) {}
 
         // If this compiles, all API types are exported correctly

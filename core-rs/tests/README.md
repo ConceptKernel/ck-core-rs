@@ -117,7 +117,7 @@ fn test_kernel_lifecycle() {
 - **Project Lifecycle** - Multi-project management
 - **Portable CLI** - Cross-platform CLI behaviors
 
-**Status:** ⚠️ Many tests need `ckr` binary built
+**Status:** ⚠️ Many tests need `ckp` binary built
 
 **Run:**
 ```bash
@@ -136,9 +136,9 @@ cargo test integration
 **Status:** Not yet implemented (planned)
 
 **Future Tests:**
-- `status_command_tests.rs` - `ckr status` output validation
-- `list_command_tests.rs` - `ckr concept list` behaviors
-- `emit_command_tests.rs` - `ckr emit` event emission
+- `status_command_tests.rs` - `ckp status` output validation
+- `list_command_tests.rs` - `ckp concept list` behaviors
+- `emit_command_tests.rs` - `ckp emit` event emission
 
 **Will Test:**
 - Command output formatting
@@ -1433,7 +1433,7 @@ use std::process::Command;
 
 #[test]
 fn test_your_command() {
-    let output = Command::new("ckr")
+    let output = Command::new("ckp")
         .arg("your-command")
         .output()
         .unwrap();

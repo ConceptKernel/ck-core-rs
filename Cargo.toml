@@ -1,8 +1,8 @@
 [package]
 name = "ck-core-rs"
-version = "1.3.18"
+version = "1.3.19"
 edition = "2021"
-authors = ["Peter Sty <peter@styk.tv>"]
+authors = ["Peter Styk <peter@styk.tv>"]
 description = "Concept Kernel - a sovereign computational entity in a distributed graph."
 license = "MIT"
 repository = "https://github.com/conceptkernel/core-rs"
@@ -12,8 +12,8 @@ name = "ckp_core"
 path = "core-rs/src/lib.rs"
 
 [[bin]]
-name = "ckr"
-path = "core-rs/src/bin/ckr.rs"
+name = "ckp"
+path = "core-rs/src/bin/ckp.rs"
 
 [dependencies]
 # Async runtime
@@ -67,6 +67,10 @@ hex = "0.4"
 
 # Singleton pattern
 once_cell = "1.19"
+
+# Terminal colors for logs follow
+colored = "2.1"
+crc32fast = "1.4"
 
 # Unix signal handling and file locking
 [target.'cfg(unix)'.dependencies]
@@ -138,6 +142,10 @@ path = "core-rs/tests/contracts/process_tracker_contracts.rs"
 [[test]]
 name = "contracts_protocol_purity"
 path = "core-rs/tests/contracts/protocol_purity_contracts.rs"
+
+[[test]]
+name = "contracts_status_tool_path"
+path = "core-rs/tests/contracts/status_tool_path_contracts.rs"
 
 [profile.release]
 opt-level = 3

@@ -80,14 +80,27 @@ pub struct DefaultUser {
 /// Ontologies stored as ConceptKernel.Ontology kernel using standard URN resolution
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OntologyConfig {
-    /// Ontology kernel name (e.g., "ConceptKernel.Ontology")
-    pub kernel: String,
-    /// Core ConceptKernel ontology URN (resolves via UrnResolver)
+    /// Ontology kernel name (e.g., "ConceptKernel.Ontology") - Optional
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kernel: Option<String>,
+    /// Core ConceptKernel ontology URN (resolves via UrnResolver or file://)
     pub core: String,
-    /// BFO upper ontology URN (resolves via UrnResolver)
+    /// BFO upper ontology URN (resolves via UrnResolver or http://)
     pub bfo: String,
-    /// Edge predicate mappings URN (resolves via UrnResolver)
+    /// Edge predicate mappings URN (resolves via UrnResolver or file://)
     pub predicates: String,
+    /// Process ontology URN (optional, v1.3.18+)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub processes: Option<String>,
+    /// RBAC ontology URN (optional, v1.3.18+)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rbac: Option<String>,
+    /// Self-improvement ontology URN (optional, v1.3.18+)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub improvement: Option<String>,
+    /// Workflow orchestration ontology URN (optional, v1.3.18+)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<String>,
 }
 
 /// Project specification

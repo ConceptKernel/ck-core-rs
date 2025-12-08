@@ -16,7 +16,7 @@ use std::path::PathBuf;
 /// SACRIFICES: If this fails, you're breaking SPARQL compatibility
 #[test]
 fn process_urn_format_is_protocol_constant() {
-    let tracker = ProcessTracker::new(PathBuf::from("concepts"));
+    let _tracker = ProcessTracker::new(PathBuf::from("concepts"));
 
     let process_type = "invoke";
     let tx_id = "tx_20251128_120000_abc123";

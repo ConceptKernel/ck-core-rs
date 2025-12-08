@@ -176,8 +176,8 @@ fn route_to_target(
     let mut edge_kernel_lock = edge_kernel.lock().unwrap();
 
     // Check if edge exists, create if not
-    // Note: EdgeKernel uses v1.3.14 internally, not v1.3.16
-    let edge_urn = format!("ckp://Edge.{}.{}-to-{}:v1.3.14", predicate, source, target);
+    // Note: EdgeKernel uses v1.3.16 internally
+    let edge_urn = format!("ckp://Edge.{}.{}-to-{}:v1.3.16", predicate, source, target);
 
     if edge_kernel_lock.get_edge(&edge_urn)?.is_none() {
         edge_kernel_lock.create_edge(predicate, source, target)?;

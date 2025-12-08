@@ -41,7 +41,7 @@ fn pid_validation_exact_equality_no_tolerance() {
 /// SACRIFICES: If this fails, you're allowing false positives
 #[test]
 fn pid_reuse_scenario_is_detected() {
-    let pid = 12345u32;
+    let _pid = 12345u32;
 
     // Old process: started at T=1000, stopped at T=1005
     let old_start = 1000u64;
@@ -107,7 +107,7 @@ fn stale_pid_files_fail_validation() {
     // 3. Kernel crashes (PID file remains)
     // 4. New unrelated process gets PID 12345 at T=2000
 
-    let recorded_pid = 12345u32;
+    let _recorded_pid = 12345u32;
     let recorded_start = 1000u64;
 
     // Query OS for actual start time of PID 12345
@@ -158,7 +158,7 @@ fn process_start_time_comes_from_os() {
 fn missing_pid_file_means_not_running() {
     // Scenario: PID file doesn't exist
 
-    let pid_file_exists = false;
+    let _pid_file_exists = false;
     let kernel_is_running = false;
 
     assert_eq!(

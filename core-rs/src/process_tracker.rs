@@ -13,14 +13,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 static PROCESS_TRACKER_INSTANCE: OnceCell<ProcessTracker> = OnceCell::new();
 
 /// BFO-aligned process tracker
 pub struct ProcessTracker {
     /// Root concepts directory
-    concepts_root: PathBuf,
+    _concepts_root: PathBuf,
 
     /// Processes storage directory
     processes_dir: PathBuf,
@@ -120,6 +120,12 @@ pub struct QueryFilters {
 
     /// Maximum results
     pub limit: Option<usize>,
+
+    /// Sort order (asc or desc)
+    pub order: Option<String>,
+
+    /// Field to sort by (default: createdAt)
+    pub sort_field: Option<String>,
 }
 
 /// Process statistics
@@ -161,7 +167,7 @@ impl ProcessTracker {
         }
 
         Ok(Self {
-            concepts_root,
+            _concepts_root: concepts_root,
             processes_dir,
         })
     }
@@ -487,15 +493,9 @@ impl ProcessTracker {
             files.extend(dir_files);
         }
 
-        // Sort by filename (txId) descending
-        files.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
-
-        // Load and filter processes
+        // Load all processes first for flexible sorting
+        let mut all_processes: Vec<Process> = Vec::new();
         for file_path in files {
-            if results.len() >= limit {
-                break;
-            }
-
             let json = match fs::read_to_string(&file_path) {
                 Ok(j) => j,
                 Err(_) => continue,
@@ -535,8 +535,32 @@ impl ProcessTracker {
                 }
             }
 
-            results.push(process);
+            all_processes.push(process);
         }
+
+        // Sort processes based on sort_field and order
+        let sort_field = filters.sort_field.unwrap_or_else(|| "createdAt".to_string());
+        let is_ascending = filters.order.as_ref().map(|o| o == "asc").unwrap_or(false);
+
+        all_processes.sort_by(|a, b| {
+            let ordering = match sort_field.as_str() {
+                "createdAt" => a.created_at.cmp(&b.created_at),
+                "updatedAt" => a.updated_at.cmp(&b.updated_at),
+                "txId" => a.tx_id.cmp(&b.tx_id),
+                "status" => a.status.cmp(&b.status),
+                "type" => a.process_type.cmp(&b.process_type),
+                _ => a.created_at.cmp(&b.created_at), // Default to createdAt
+            };
+
+            if is_ascending {
+                ordering
+            } else {
+                ordering.reverse()
+            }
+        });
+
+        // Apply limit
+        results = all_processes.into_iter().take(limit).collect();
 
         Ok(results)
     }

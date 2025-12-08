@@ -89,7 +89,7 @@ mod tests {
     /// for listing, counting, and describing instances.
     #[test]
     fn test_scanner_methods_accessible() {
-        let scanner = InstanceScanner::new(
+        let _scanner = InstanceScanner::new(
             PathBuf::from("/tmp/test"),
             "Test.Kernel".to_string()
         );

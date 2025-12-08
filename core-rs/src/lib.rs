@@ -35,6 +35,7 @@
 pub mod urn;
 pub mod errors;
 pub mod ontology;
+pub mod workflow;
 pub mod drivers;
 pub mod kernel;
 pub mod project;
@@ -48,9 +49,10 @@ pub mod cache;
 pub mod storage;
 pub mod daemon;
 
-pub use urn::{UrnResolver, UrnValidator, ParsedUrn, ParsedEdgeUrn};
+pub use urn::{UrnResolver, UrnValidator, ParsedUrn, ParsedEdgeUrn, ParsedQueryUrn, ParsedQueryUrnV2};
 pub use errors::CkpError;
 pub use ontology::{OntologyReader, Ontology, OntologyLibrary, OntologyError, BfoEntityType, BfoAligned, RoleMetadata, FunctionMetadata, KernelMetadata};
+pub use workflow::{WorkflowAPI, Workflow, WorkflowPhase, WorkflowEdge, WorkflowTrigger, WorkflowStatus, PhaseStatus, WorkflowCycle, CycleType, WorkflowValidation};
 pub use kernel::{ConceptKernelGovernor, Kernel, JobFile, Job, InboxIterator, KernelManager, KernelStatus, QueueStats, RunningPids, StartResult, KernelContext, AdoptedContext, EdgeResponse, KernelBuilder};
 pub use project::{ProjectConfig, ProjectRegistry, ProjectEntry, ProjectInfo};
 pub use port::PortManager;
@@ -83,23 +85,23 @@ mod tests {
         // Verify modules are accessible from crate root
         // This test compiles only if modules are public
 
-        // Core infrastructure modules
-        use crate::kernel;
-        use crate::drivers;
-        use crate::ontology;
-        use crate::storage;
-        use crate::edge;
-        use crate::rbac;
-        use crate::project;
-        use crate::port;
-        use crate::cache;
-        use crate::urn;
-        use crate::errors;
+        // Core infrastructure modules - touch each module's existence
+        let _ = std::any::type_name::<&crate::kernel::KernelManager>();
+        let _ = std::any::type_name::<&crate::drivers::FileSystemDriver>();
+        let _ = std::any::type_name::<&crate::ontology::OntologyLibrary>();
+        let _ = std::any::type_name::<&crate::storage::InstanceScanner>();
+        let _ = std::any::type_name::<&crate::edge::EdgeKernel>();
+        let _ = std::any::type_name::<&crate::rbac::PermissionChecker>();
+        let _ = std::any::type_name::<&crate::project::ProjectConfig>();
+        let _ = std::any::type_name::<&crate::port::PortManager>();
+        let _ = std::any::type_name::<&crate::cache::PackageManager>();
+        let _ = std::any::type_name::<&crate::urn::UrnResolver>();
+        let _ = std::any::type_name::<crate::errors::CkpError>();
 
         // Tracking modules
-        use crate::process_tracker;
-        use crate::continuant_tracker;
-        use crate::compliance;
+        let _ = std::any::type_name::<&crate::process_tracker::ProcessTracker>();
+        let _ = std::any::type_name::<&crate::continuant_tracker::ContinuantTracker>();
+        let _ = std::any::type_name::<&crate::compliance::AuditLogger>();
 
         // If this compiles, all modules are exported
     }

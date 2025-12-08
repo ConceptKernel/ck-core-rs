@@ -25,10 +25,28 @@ target
 docs/
 core-rs/docs/
 
-# Concepts Project Artefacts
+# Concepts Project Artefacts (Deployment/Runtime)
 TODO.md
+RELEASE_PLAN.md
+FILES_FOR_RELEASE.md
 ck-client-js/
 target
-concepts
+concepts/
+examples/
+scripts/
+workflows/
+
+# Runtime State
 .ckports
 .ckproject
+.continuants/
+.processes/
+
+# Test/Development Scripts
+test-*.sh
+test-*.js
+test-*.html
+generate*.sh
+create*.sh
+*.log
+*.bak

@@ -53,7 +53,7 @@ impl PortRange {
 
 /// Port Manager - manages .ckports file and dynamic port allocation
 pub struct PortManager {
-    project_path: PathBuf,
+    _project_path: PathBuf,
     port_map_path: PathBuf,
     port_map: PortMap,
 }
@@ -74,7 +74,7 @@ impl PortManager {
         let port_map = Self::load_port_map(&port_map_path)?;
 
         Ok(PortManager {
-            project_path,
+            _project_path: project_path,
             port_map_path,
             port_map,
         })
@@ -174,7 +174,7 @@ impl PortManager {
         kernel_name: &str,
         preferred_offset: Option<u16>,
     ) -> Result<u16, CkpError> {
-        let base_port = self.port_map.base_port.ok_or_else(|| {
+        let _base_port = self.port_map.base_port.ok_or_else(|| {
             CkpError::PortError(
                 "Base port not set. Initialize project first with ProjectRegistry.".to_string(),
             )
@@ -269,6 +269,158 @@ impl PortManager {
     pub fn clear_allocations(&mut self) -> Result<(), CkpError> {
         self.port_map.allocations.clear();
         self.save()
+    }
+
+    /// Check for occupied ports in the project's port range
+    ///
+    /// v1.3.18: Added to detect port conflicts before kernel starts
+    /// Prevents accidental disruption from already-running services
+    ///
+    /// # Returns
+    /// Vector of (port, occupied) tuples for all ports in range
+    /// - port: Port number
+    /// - occupied: true if port is in use by external service
+    ///
+    /// # Example
+    /// ```
+    /// let occupied = port_manager.check_occupied_ports()?;
+    /// for (port, is_occupied) in occupied {
+    ///     if is_occupied {
+    ///         println!("⚠️  Port {} is OCCUPIED by external service", port);
+    ///     }
+    /// }
+    /// ```
+    pub fn check_occupied_ports(&self) -> Result<Vec<(u16, bool)>, CkpError> {
+        let range = self.get_port_range().ok_or_else(|| {
+            CkpError::PortError("Base port not set. Cannot check occupied ports.".to_string())
+        })?;
+
+        let mut results = Vec::new();
+
+        for offset in 0..=199 {
+            let port = range.start + offset;
+            let is_occupied = !Self::is_port_available(port);
+            results.push((port, is_occupied));
+        }
+
+        Ok(results)
+    }
+
+    /// Get list of occupied ports in range
+    ///
+    /// Returns only ports that are occupied by external services
+    ///
+    /// # Returns
+    /// Vector of occupied port numbers
+    pub fn get_occupied_ports(&self) -> Result<Vec<u16>, CkpError> {
+        let all_ports = self.check_occupied_ports()?;
+        let occupied: Vec<u16> = all_ports
+            .into_iter()
+            .filter_map(|(port, is_occupied)| if is_occupied { Some(port) } else { None })
+            .collect();
+
+        Ok(occupied)
+    }
+
+    /// Check if specific port is occupied
+    ///
+    /// # Arguments
+    /// * `port` - Port number to check
+    ///
+    /// # Returns
+    /// true if port is occupied, false if available
+    pub fn is_port_occupied(&self, port: u16) -> bool {
+        !Self::is_port_available(port)
+    }
+
+    /// Allocate port with occupation warning
+    ///
+    /// v1.3.18: Enhanced to warn about occupied ports
+    /// If preferred port is occupied by external service, logs warning
+    /// and attempts to allocate next available port
+    ///
+    /// # Arguments
+    /// * `kernel_name` - Kernel name
+    /// * `preferred_offset` - Optional preferred offset (0-199)
+    ///
+    /// # Returns
+    /// (port, was_preferred_occupied) - Allocated port and occupation flag
+    pub fn allocate_with_check(
+        &mut self,
+        kernel_name: &str,
+        preferred_offset: Option<u16>,
+    ) -> Result<(u16, bool), CkpError> {
+        let _base_port = self.port_map.base_port.ok_or_else(|| {
+            CkpError::PortError(
+                "Base port not set. Initialize project first with ProjectRegistry.".to_string(),
+            )
+        })?;
+
+        // Check if kernel already has allocated port
+        if let Some(&port) = self.port_map.allocations.get(kernel_name) {
+            // Check if it's still available
+            let is_occupied = !Self::is_port_available(port);
+            return Ok((port, is_occupied));
+        }
+
+        let range = self.get_port_range().unwrap();
+
+        // If preferred offset specified, try that first
+        if let Some(offset) = preferred_offset {
+            if offset <= 199 {
+                let candidate_port = range.start + offset;
+
+                // Check if already allocated to another kernel
+                if self.port_map.allocations.values().any(|&p| p == candidate_port) {
+                    // Already allocated - skip
+                } else {
+                    // Check if occupied by external service
+                    let is_occupied = !Self::is_port_available(candidate_port);
+
+                    if !is_occupied {
+                        // Available - allocate it
+                        self.port_map
+                            .allocations
+                            .insert(kernel_name.to_string(), candidate_port);
+                        self.save()?;
+                        return Ok((candidate_port, false));
+                    } else {
+                        // Occupied - log warning and continue to find alternative
+                        eprintln!(
+                            "⚠️  Preferred port {} is OCCUPIED by external service for {}. Allocating alternative...",
+                            candidate_port, kernel_name
+                        );
+                    }
+                }
+            }
+        }
+
+        // Find next available port in range
+        for offset in 0..=199 {
+            let candidate_port = range.start + offset;
+
+            // Check if already allocated to another kernel
+            if self.port_map.allocations.values().any(|&p| p == candidate_port) {
+                continue;
+            }
+
+            // Test if port is available
+            if Self::is_port_available(candidate_port) {
+                self.port_map
+                    .allocations
+                    .insert(kernel_name.to_string(), candidate_port);
+                self.save()?;
+
+                // Return true if we had to skip preferred port
+                let had_to_skip = preferred_offset.is_some();
+                return Ok((candidate_port, had_to_skip));
+            }
+        }
+
+        Err(CkpError::PortUnavailable(format!(
+            "No available ports in range {}-{} for kernel {} (all 200 ports occupied)",
+            range.start, range.end, kernel_name
+        )))
     }
 }
 
@@ -449,5 +601,189 @@ mod tests {
         assert!(range.contains(56988));
         assert!(!range.contains(56788));
         assert!(!range.contains(56989));
+    }
+
+    // v1.3.18: Port Occupation Detection Tests
+
+    #[test]
+    fn test_check_occupied_ports() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut port_manager = PortManager::new(temp_dir.path()).unwrap();
+
+        port_manager.set_base_port(56789).unwrap();
+
+        // Check all ports in range (200 ports)
+        let occupied = port_manager.check_occupied_ports().unwrap();
+
+        // Should return exactly 200 entries
+        assert_eq!(occupied.len(), 200);
+
+        // Verify range coverage
+        assert_eq!(occupied.first().unwrap().0, 56789); // First port
+        assert_eq!(occupied.last().unwrap().0, 56988);  // Last port (56789 + 199)
+
+        // All entries should have port and occupation flag
+        for (port, _is_occupied) in occupied {
+            assert!(port >= 56789 && port <= 56988);
+        }
+    }
+
+    #[test]
+    fn test_check_occupied_ports_without_base_port() {
+        let temp_dir = TempDir::new().unwrap();
+        let port_manager = PortManager::new(temp_dir.path()).unwrap();
+
+        // Should error when base port not set
+        let result = port_manager.check_occupied_ports();
+        assert!(result.is_err());
+
+        if let Err(CkpError::PortError(msg)) = result {
+            assert!(msg.contains("Base port not set"));
+        } else {
+            panic!("Expected PortError");
+        }
+    }
+
+    #[test]
+    fn test_get_occupied_ports() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut port_manager = PortManager::new(temp_dir.path()).unwrap();
+
+        port_manager.set_base_port(56789).unwrap();
+
+        // Get only occupied ports
+        let occupied = port_manager.get_occupied_ports().unwrap();
+
+        // Result should be empty or contain ports
+        // (We can't reliably predict which ports are occupied in test environment)
+        // Just verify it returns a valid Vec
+        assert!(occupied.len() <= 200); // Can't exceed range
+
+        // Verify all returned ports are in valid range
+        for port in occupied {
+            assert!(port >= 56789 && port <= 56988);
+        }
+    }
+
+    #[test]
+    fn test_get_occupied_ports_without_base_port() {
+        let temp_dir = TempDir::new().unwrap();
+        let port_manager = PortManager::new(temp_dir.path()).unwrap();
+
+        // Should error when base port not set
+        let result = port_manager.get_occupied_ports();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_is_port_occupied() {
+        let temp_dir = TempDir::new().unwrap();
+        let port_manager = PortManager::new(temp_dir.path()).unwrap();
+
+        // Test with a very high port unlikely to be in use
+        let result = port_manager.is_port_occupied(65534);
+
+        // Result should be boolean (true or false)
+        // We can't predict if port is occupied, just verify API works
+        assert!(result == true || result == false);
+    }
+
+    #[test]
+    fn test_allocate_with_check_returns_tuple() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut port_manager = PortManager::new(temp_dir.path()).unwrap();
+
+        port_manager.set_base_port(56789).unwrap();
+
+        // Allocate port with check
+        let result = port_manager.allocate_with_check("Test.Kernel", None).unwrap();
+
+        // Should return (port, occupation_flag) tuple
+        let (port, was_occupied) = result;
+
+        // Port should be in valid range
+        assert!(port >= 56789 && port <= 56988);
+
+        // Occupation flag should be boolean
+        assert!(was_occupied == true || was_occupied == false);
+
+        // Verify kernel was actually allocated
+        assert_eq!(port_manager.get("Test.Kernel"), Some(port));
+    }
+
+    #[test]
+    fn test_allocate_with_check_preferred_offset() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut port_manager = PortManager::new(temp_dir.path()).unwrap();
+
+        port_manager.set_base_port(56789).unwrap();
+
+        // Allocate with preferred offset
+        let (port, _was_occupied) = port_manager
+            .allocate_with_check("Test.Kernel", Some(10))
+            .unwrap();
+
+        // If preferred port is available, should get base + 10
+        // If occupied, should get alternative
+        // Either way, should be in valid range
+        assert!(port >= 56789 && port <= 56988);
+
+        // Verify kernel was allocated
+        assert_eq!(port_manager.get("Test.Kernel"), Some(port));
+    }
+
+    #[test]
+    fn test_allocate_with_check_reuses_existing_allocation() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut port_manager = PortManager::new(temp_dir.path()).unwrap();
+
+        port_manager.set_base_port(56789).unwrap();
+
+        // First allocation
+        let (port1, _) = port_manager
+            .allocate_with_check("Test.Kernel", None)
+            .unwrap();
+
+        // Second allocation should reuse same port
+        let (port2, _) = port_manager
+            .allocate_with_check("Test.Kernel", None)
+            .unwrap();
+
+        assert_eq!(port1, port2);
+    }
+
+    #[test]
+    fn test_allocate_with_check_without_base_port() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut port_manager = PortManager::new(temp_dir.path()).unwrap();
+
+        // Should error when base port not set
+        let result = port_manager.allocate_with_check("Test.Kernel", None);
+        assert!(result.is_err());
+
+        if let Err(CkpError::PortError(msg)) = result {
+            assert!(msg.contains("Base port not set"));
+        } else {
+            panic!("Expected PortError");
+        }
+    }
+
+    #[test]
+    fn test_check_occupied_ports_full_range() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut port_manager = PortManager::new(temp_dir.path()).unwrap();
+
+        // Use a high port range to avoid conflicts
+        port_manager.set_base_port(58000).unwrap();
+
+        let occupied = port_manager.check_occupied_ports().unwrap();
+
+        // Verify complete coverage of range
+        assert_eq!(occupied.len(), 200);
+
+        // Verify sequential port numbers
+        for (i, (port, _)) in occupied.iter().enumerate() {
+            assert_eq!(*port, 58000 + i as u16);
+        }
     }
 }

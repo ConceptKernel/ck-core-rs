@@ -151,11 +151,15 @@ impl UrnValidator {
         let mut result = ValidationResult::new();
 
         match UrnResolver::parse_edge_urn(edge_urn) {
+            Err(e) => {
+                result.add_error(format!("Failed to parse edge URN: {}", e));
+                return result;
+            }
             Ok(parsed) => {
                 // Validate predicate
                 if !Self::is_valid_predicate(&parsed.predicate) {
                     result.add_error(format!(
-                        "Invalid predicate: {}. Valid predicates: PRODUCES, REQUIRES, VALIDATES, INFLUENCES, TRANSFORMS, LLM_ASSIST, ANNOUNCES",
+                        "Invalid predicate: {}. Valid predicates: PRODUCES, REQUIRES, VALIDATES, INFLUENCES, TRANSFORMS, LLM_ASSIST, ANNOUNCES, LINKS_IDENTITY",
                         parsed.predicate
                     ));
                 }
@@ -170,9 +174,11 @@ impl UrnValidator {
                     result.add_error(format!("Invalid target kernel name: {}", parsed.target));
                 }
 
-                // Validate version
-                if !Self::is_valid_version(&parsed.version) {
-                    result.add_error(format!("Invalid version format: {}", parsed.version));
+                // Validate version (if present)
+                if let Some(ref version) = parsed.version {
+                    if !Self::is_valid_version(version) {
+                        result.add_error(format!("Invalid version format: {}", version));
+                    }
                 }
             }
             Err(e) => {
@@ -261,7 +267,7 @@ impl UrnValidator {
 
     /// Check if predicate is valid
     ///
-    /// Valid predicates: PRODUCES, REQUIRES, VALIDATES, INFLUENCES, TRANSFORMS, LLM_ASSIST, ANNOUNCES
+    /// Valid predicates: PRODUCES, REQUIRES, VALIDATES, INFLUENCES, TRANSFORMS, LLM_ASSIST, ANNOUNCES, LINKS_IDENTITY
     ///
     /// # Examples
     ///
@@ -275,7 +281,7 @@ impl UrnValidator {
     pub fn is_valid_predicate(predicate: &str) -> bool {
         matches!(
             predicate,
-            "PRODUCES" | "REQUIRES" | "VALIDATES" | "INFLUENCES" | "TRANSFORMS" | "LLM_ASSIST" | "ANNOUNCES"
+            "PRODUCES" | "REQUIRES" | "VALIDATES" | "INFLUENCES" | "TRANSFORMS" | "LLM_ASSIST" | "ANNOUNCES" | "LINKS_IDENTITY"
         )
     }
 

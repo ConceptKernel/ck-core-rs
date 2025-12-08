@@ -7,7 +7,7 @@
 
 use crate::errors::{CkpError, Result};
 use crate::ontology::{OntologyReader, Ontology};
-use crate::continuant_tracker::{ContinuantTracker, Function, Role};
+use crate::continuant_tracker::{ContinuantTracker, Function};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -399,9 +399,15 @@ process.exit(0);
 
         let tool_pid_file = kernel_dir.join(".tool.pid");
         let watcher_pid_file = kernel_dir.join(".watcher.pid");
+        let governor_pid_file = kernel_dir.join("tool/.governor.pid");
 
         let pid = self.read_and_validate_pid(&tool_pid_file)?;
-        let watcher_pid = self.read_and_validate_pid(&watcher_pid_file)?;
+
+        // Try .watcher.pid first, then fall back to tool/.governor.pid
+        let watcher_pid = match self.read_and_validate_pid(&watcher_pid_file)? {
+            Some(pid) => Some(pid),
+            None => self.read_and_validate_pid(&governor_pid_file)?,
+        };
 
         Ok(RunningPids { pid, watcher_pid })
     }
@@ -524,7 +530,7 @@ process.exit(0);
         }
 
         // Create kernel entity
-        let mut entity = tracker.create_kernel_entity(
+        let entity = tracker.create_kernel_entity(
             kernel_name,
             &version,
             &kernel_type,
@@ -825,16 +831,24 @@ process.exit(0);
         // Would check for "conceptkernel.io/stopped" annotation here
 
         // Calculate mode based on type and running processes
-        if kernel_type.contains("hot") && pids.pid.is_some() {
-            "ONLINE".to_string()
+        if kernel_type.contains("hot") {
+            // Hot services: long-running processes (websockets, APIs, etc.)
+            if pids.pid.is_some() {
+                "ONLINE".to_string()
+            } else {
+                // Hot service not running = DOWN (regardless of watcher state)
+                "DOWN".to_string()
+            }
         } else if kernel_type.contains("cold") {
+            // Cold services: job processors with governors
             match (pids.watcher_pid, pids.pid) {
-                (Some(_), Some(_)) => "PROCESSING".to_string(),
-                (Some(_), None) => "IDLE".to_string(),
-                _ => "SLEEP".to_string(),
+                (Some(_), Some(_)) => "PROCESSING".to_string(), // Processing a job
+                (Some(_), None) => "IDLE".to_string(),          // Ready, waiting for jobs
+                _ => "DOWN".to_string(),                         // Governor not running
             }
         } else {
-            "SLEEP".to_string()
+            // Unknown type
+            "DOWN".to_string()
         }
     }
 
@@ -1055,6 +1069,19 @@ metadata:
         );
         fs::write(kernel_dir.join("conceptkernel.yaml"), ontology).unwrap();
 
+        // Create ontology.ttl (required for BFO alignment)
+        let ontology_ttl = format!(
+            r#"@prefix ckp: <ckp://{}:v0.1#> .
+@prefix bfo: <http://purl.obolibrary.org/obo/BFO_> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+
+ckp: a bfo:0000029 ;  # Site (BFO)
+    rdf:label "{}" .
+"#,
+            name, name
+        );
+        fs::write(kernel_dir.join("ontology.ttl"), ontology_ttl).unwrap();
+
         // Create queue directories
         fs::create_dir_all(kernel_dir.join("queue/inbox")).unwrap();
         fs::create_dir_all(kernel_dir.join("queue/staging")).unwrap();
@@ -1207,7 +1234,14 @@ metadata:
 
         // Write PID files to simulate running kernel
         let current_pid = std::process::id();
-        fs::write(kernel_dir.join(".watcher.pid"), current_pid.to_string()).unwrap();
+        let start_time = {
+            let mut sys = sysinfo::System::new();
+            sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
+            sys.process(sysinfo::Pid::from_u32(current_pid))
+                .map(|p| p.start_time())
+                .unwrap_or(0)
+        };
+        fs::write(kernel_dir.join(".watcher.pid"), format!("{}:{}", current_pid, start_time)).unwrap();
 
         let options = HashMap::new();
         let result = manager.start_kernel("TestKernel", &options).await.unwrap();
@@ -1314,7 +1348,14 @@ metadata:
 
         // Write PID file to simulate running hot kernel
         let current_pid = std::process::id();
-        fs::write(kernel_dir.join(".tool.pid"), current_pid.to_string()).unwrap();
+        let start_time = {
+            let mut sys = sysinfo::System::new();
+            sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
+            sys.process(sysinfo::Pid::from_u32(current_pid))
+                .map(|p| p.start_time())
+                .unwrap_or(0)
+        };
+        fs::write(kernel_dir.join(".tool.pid"), format!("{}:{}", current_pid, start_time)).unwrap();
 
         let status = manager.get_kernel_status("TestKernel").await.unwrap();
 
