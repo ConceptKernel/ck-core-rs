@@ -1,6 +1,6 @@
 # ConceptKernel
 
-[![Version](https://img.shields.io/badge/version-1.3.18-blue.svg)](https://github.com/conceptkernel/ck-core-rs)
+[![Version](https://img.shields.io/badge/version-1.3.19-blue.svg)](https://github.com/conceptkernel/ck-core-rs)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)](https://www.rust-lang.org)
 [![Protocol](https://img.shields.io/badge/protocol-CKP%2Fv1.3-purple.svg)](docs/)
@@ -192,7 +192,7 @@ This automatically detects your platform and installs the latest version of `ckp
 docker pull conceptkernel/ck-core-rs:latest
 
 # Or specific version
-docker pull conceptkernel/ck-core-rs:v1.3.18
+docker pull conceptkernel/ck-core-rs:v1.3.19
 
 # Run ckp
 docker run --rm conceptkernel/ck-core-rs:latest --version
@@ -204,7 +204,7 @@ Download pre-built binaries from [Releases](https://github.com/ConceptKernel/ck-
 
 ```bash
 # Example for Linux x86_64
-curl -L https://github.com/ConceptKernel/ck-core-rs/releases/download/v1.3.18/ckp-v1.3.18-x86_64-linux -o ckp
+curl -L https://github.com/ConceptKernel/ck-core-rs/releases/download/v1.3.19/ckp-v1.3.19-x86_64-linux -o ckp
 chmod +x ckp
 sudo mv ckp /usr/local/bin/
 ```
@@ -226,54 +226,87 @@ cargo build --release --bin ckp
 
 ---
 
-## Browser Client Library
+## JavaScript Client Library
 
-ConceptKernel ships with an out-of-the-box **client.js** library for browser applications. In just a few lines of code, you get **authenticated bi-directional WebSocket capability** with persistence, synchronicity, and provenance.
+The official [@conceptkernel/ck-client-js](https://www.npmjs.com/package/@conceptkernel/ck-client-js) library provides elegant one-line connectivity to ConceptKernel systems. Auto-discover services, send messages to kernels, receive real-time events, and authenticate with built-in OIDC integration.
+
+**Current version:** [v1.3.22](https://www.npmjs.com/package/@conceptkernel/ck-client-js/v/1.3.22) (published separately on npm)
 
 **Installation:**
-
-```html
-<!-- Add to your HTML -->
-<script src="https://cdn.conceptkernel.org/client.js"></script>
-```
-
-**Or via npm:**
 
 ```bash
 npm install @conceptkernel/ck-client-js
 ```
 
-**Usage:**
+**Quickstart:**
 
 ```javascript
-import { CKClient } from '@conceptkernel/ck-client-js';
+const ConceptKernel = require('@conceptkernel/ck-client-js');
 
-// Connect to your ConceptKernel system
-const client = new CKClient({
-  gateway: 'wss://your-system.com',
-  token: 'your-auth-token'  // OIDC token from System.Oidc.Provider
+// Auto-discover services and connect WebSocket
+const ck = await ConceptKernel.connect('http://localhost:56000');
+
+// Send message to kernel
+await ck.emit('System.Echo', {
+  action: 'process',
+  data: { foo: 'bar' }
 });
 
-// Send a message
-await client.emit('MyKernel', { action: 'process', data: { foo: 'bar' } });
-
-// Receive responses from workflow
-client.on('result', (response) => {
-  console.log('Workflow processed:', response);
+// Listen for real-time events from any kernel
+ck.on('event', (event) => {
+  console.log('Received from:', event.kernel);
+  console.log('Process URN:', event.processUrn);
+  console.log('Data:', event.data);
 });
 ```
 
-**The Magic:**
+**With Authentication:**
 
-One user sends a message through the browser client. The message enters the concept kernel graph, flows through your workflow (edge by edge, kernel by kernel), gets processed with full provenance tracking, and broadcasts responses back to **all connected users within milliseconds**.
+```javascript
+// Connect and authenticate
+const ck = await ConceptKernel.connect('http://localhost:56000');
+await ck.authenticate('alice', 'alice123');
 
-- **Authenticated** - OIDC integration ensures only authorized users participate
-- **Bi-directional** - Real-time updates flow both ways via WebSocket
-- **Persistent** - Every message creates evidence in storage with full provenance
-- **Synchronized** - All clients see the same state, instantly
-- **Governed** - Consensus-approved workflows only
+console.log('Actor:', ck.actor);  // ckp://System.Oidc.User#alice
+console.log('Roles:', ck.roles);  // ['user', 'developer', 'admin']
 
-Load `System.Gateway` + `System.Wss` + `System.Oidc.Provider`, connect your browser client, and you have a **production-ready real-time collaborative system** with cryptographic proof of every action.
+// Now all emit() calls include JWT token automatically
+await ck.emit('MyKernel', { action: 'authenticated-request' });
+```
+
+**Browser Usage:**
+
+```html
+<script src="node_modules/@conceptkernel/ck-client-js/index.js"></script>
+<script>
+  (async () => {
+    const ck = await ConceptKernel.connect('http://localhost:56000');
+    await ck.emit('System.Echo', { hello: 'world' });
+
+    ck.on('event', (event) => {
+      document.getElementById('output').textContent = JSON.stringify(event, null, 2);
+    });
+  })();
+</script>
+```
+
+**Key Features:**
+
+- **Auto-Discovery** - Automatically detects gateway, WebSocket, OIDC, and registry services
+- **Real-time Events** - Bi-directional WebSocket with event handlers
+- **Authentication** - Built-in OIDC integration with JWT token management
+- **Process Tracking** - Every emit returns Process URN (`ckp://Process#...`)
+- **Provenance** - Full transaction IDs and timestamps for audit trails
+- **Auto-Reconnect** - Handles disconnections and reconnects automatically
+- **Browser & Node.js** - Works in both environments
+
+**The Flow:**
+
+One user sends a message through the client. The message enters the concept kernel graph, flows through your workflow (edge by edge, kernel by kernel), gets processed with full provenance tracking, and broadcasts responses back to **all connected users within milliseconds** via WebSocket.
+
+Load `System.Gateway` + `System.Wss` + `System.Oidc.Provider`, connect your client, and you have a **production-ready real-time collaborative system** with cryptographic proof of every action.
+
+**Full Documentation:** https://github.com/ConceptKernel/ck-client-js
 
 ---
 
@@ -303,7 +336,7 @@ The community. Through role-based permissions, consensus voting, and captured de
 
 ## Performance
 
-ConceptKernel Rust Runtime (v1.3.18):
+ConceptKernel Rust Runtime (v1.3.19):
 
 | Metric | Rust Binary | Rust Docker | Notes |
 |--------|-------------|-------------|-------|
@@ -323,7 +356,7 @@ ConceptKernel Rust Runtime (v1.3.18):
 ## Command Reference
 
 ```
-ckp v1.3.18 - ConceptKernel Protocol CLI
+ckp v1.3.19 - ConceptKernel Protocol CLI
 
 ckp
 ├── concept                # Manage concepts (kernels)
@@ -495,7 +528,7 @@ No direct writes. No coupling. Edges mostly just connect — transformation rare
 
 ## The Foundation
 
-ConceptKernel v1.3.18 implements the CKP (Concept Kernel Protocol) specification. It provides:
+ConceptKernel v1.3.19 implements the CKP (Concept Kernel Protocol) specification. It provides:
 
 - **Standardized kernel anatomy** - conceptkernel.yaml, ontology.ttl, queue/, storage/, tx/, tool/
 - **CKP URN addressing** - `ckp://Kernel:version` for sovereign identity
