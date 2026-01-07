@@ -147,28 +147,28 @@ impl EdgeMetadata {
     /// assert_eq!(ver, "v1.3.14");
     /// ```
     pub fn parse_urn(urn: &str) -> Result<(String, String, String, String), String> {
-        // Format: ckp://Edge.PREDICATE.Source-to-Target:version
+        // v1.3.20 Format: ckp://Edge#Connection-Source-to-Target-PREDICATE:version
 
         // Remove protocol prefix
-        let without_protocol = urn.strip_prefix("ckp://Edge.")
-            .ok_or("Invalid URN: missing 'ckp://Edge.' prefix")?;
+        let without_protocol = urn.strip_prefix("ckp://Edge#Connection-")
+            .ok_or("Invalid URN: missing 'ckp://Edge#Connection-' prefix")?;
 
-        // Split on first dot to get predicate
-        let parts: Vec<&str> = without_protocol.splitn(2, '.').collect();
-        if parts.len() != 2 {
-            return Err("Invalid URN: missing predicate".to_string());
-        }
-
-        let predicate = parts[0].to_string();
-        let rest = parts[1];
-
-        // Split on ':' to separate source-to-target from version
-        let parts: Vec<&str> = rest.rsplitn(2, ':').collect();
+        // Split on ':' to separate the rest from version
+        let parts: Vec<&str> = without_protocol.rsplitn(2, ':').collect();
         if parts.len() != 2 {
             return Err("Invalid URN: missing version".to_string());
         }
 
         let version = parts[0].to_string();
+        let rest = parts[1];
+
+        // Split on last '-' to get predicate
+        let parts: Vec<&str> = rest.rsplitn(2, '-').collect();
+        if parts.len() != 2 {
+            return Err("Invalid URN: missing predicate".to_string());
+        }
+
+        let predicate = parts[0].to_string();
         let source_to_target = parts[1];
 
         // Split on '-to-' to get source and target
@@ -221,13 +221,14 @@ impl EdgeMetadata {
     ///     "PRODUCES",
     ///     "MixIngredients",
     ///     "BakeCake",
-    ///     "v1.3.14"
+    ///     "v1.3.20"
     /// );
     ///
-    /// assert_eq!(urn, "ckp://Edge.PRODUCES.MixIngredients-to-BakeCake:v1.3.14");
+    /// assert_eq!(urn, "ckp://Edge#Connection-MixIngredients-to-BakeCake-PRODUCES:v1.3.20");
     /// ```
     pub fn generate_urn(predicate: &str, source: &str, target: &str, version: &str) -> String {
-        format!("ckp://Edge.{}.{}-to-{}:{}", predicate, source, target, version)
+        // v1.3.20 format: ckp://Edge#Connection-{Source}-to-{Target}-{Predicate}:{version}
+        format!("ckp://Edge#Connection-{}-to-{}-{}:{}", source, target, predicate, version)
     }
 
     /// Get edge name (predicate.source)

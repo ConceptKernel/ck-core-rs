@@ -1,11 +1,18 @@
-//! Drivers module for storage operations
+//! Drivers module for storage and transport operations (v1.3.20)
 //!
-//! Provides abstract storage interface (StorageDriver trait) and implementations:
-//! - FileSystemDriver: Local filesystem storage
-//! - HttpDriver: Remote HTTP storage
-//! - GitDriver: Git versioning for concept kernels
-//! - VersionDriver: Unified versioning abstraction (git, s3, postgres, filesystem)
-//! - Future: S3Driver, RedisDriver, PostgresDriver, IpfsDriver
+//! ## Storage Drivers
+//! - **FileSystemDriver**: Local filesystem storage (v1.3.19 synchronous, v1.3.20 async)
+//! - **LocalStorage**: Async wrapper around FileSystemDriver (v1.3.20)
+//! - **JenaStorage**: RDF triple store backend (v1.3.20)
+//! - **HttpDriver**: Remote HTTP storage
+//! - **GitDriver**: Git versioning for concept kernels
+//! - **VersionDriver**: Unified versioning abstraction
+//! - Future: AgeStorage, SeaweedFSStorage
+//!
+//! ## Transport Drivers
+//! - **LocalTransport**: Filesystem + notify crate (v1.3.20)
+//! - **NatsTransport**: NATS JetStream messaging (v1.3.20)
+//! - Future: WebSocketTransport, GrpcTransport
 
 mod traits;
 mod filesystem;
@@ -13,11 +20,41 @@ mod http;
 mod git;
 pub mod version;
 
-pub use traits::{StorageDriver, StorageDriverFactory, StorageLocation, JobFile, JobHandle};
+// v1.3.20: Storage and Transport driver implementations
+pub mod storage;
+pub mod transport;
+
+// v1.3.20: Driver Factory
+pub mod factory;
+
+// Core trait exports
+pub use traits::{
+    // Storage traits
+    StorageDriver, StorageDriverFactory, StorageLocation, JobFile, JobHandle,
+    // Storage events (v1.3.20)
+    StorageEvent, StorageEventStream,
+    // Transport traits (v1.3.20)
+    TransportDriver, JobMessage, ToolResponse, JobStream, ResultStream,
+    // Edge routing (v1.3.20)
+    EdgeMessage, EdgeMetadata, EdgeStream,
+    // Execution types (v1.3.20)
+    ExecutionMode, ToolDefinition, ResourceRequirements,
+};
+
+// Storage driver exports
 pub use filesystem::FileSystemDriver;
 pub use http::HttpDriver;
 pub use git::{GitDriver, VersionBump};
 pub use version::{VersionDriver, VersionInfo, VersionBackend, VersionDriverFactory, VersionedKernel};
+
+// v1.3.20: Storage driver exports
+pub use storage::{LocalStorage, JenaStorage};
+
+// v1.3.20: Transport driver exports
+pub use transport::{LocalTransport, NatsTransport};
+
+// v1.3.20: Driver Factory exports
+pub use factory::{DriverFactory, StorageConfig, TransportConfig, DriverConfig};
 
 #[cfg(test)]
 mod tests {

@@ -586,7 +586,7 @@ impl Kernel {
 
         // ===== STEP 4: WRITE JOB VIA DRIVER =====
         // Driver abstracts storage backend (filesystem, S3, Redis, etc.)
-        let returned_tx_id = self.driver.write_job(target, job)?;
+        let returned_tx_id = self.driver.write_job(target, job).await?;
 
         // ===== STEP 5: LOGGING AND RETURN =====
         println!("[Kernel] Emitted job {} to {}", returned_tx_id, target);

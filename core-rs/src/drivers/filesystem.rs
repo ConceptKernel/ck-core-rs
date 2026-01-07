@@ -1,4 +1,4 @@
-//! FileSystemDriver for ConceptKernel event sourcing
+//! FileSystemDriver for ConceptKernel event sourcing (v1.3.20 - async)
 //!
 //! Provides file-based event sourcing operations including:
 //! - Storage artifact minting
@@ -6,7 +6,11 @@
 //! - Job archiving
 //! - Per-edge queue management (v1.3.12)
 //! - Symlink creation with relative paths
+//! - RDF ontology loading/saving (v1.3.20)
+//! - Tool definition parsing (v1.3.20)
+//! - Result storage (v1.3.20)
 
+use async_trait::async_trait;
 use crate::errors::{CkpError, Result};
 use chrono::Utc;
 use serde_json::Value as JsonValue;
@@ -2994,8 +2998,9 @@ spec:
 use crate::drivers::traits::{StorageDriver, JobFile as TraitJobFile, JobHandle, StorageLocation};
 use crate::urn::UrnResolver;
 
+#[async_trait]
 impl StorageDriver for FileSystemDriver {
-    fn write_job(&self, target_urn: &str, job: TraitJobFile) -> Result<String> {
+    async fn write_job(&self, target_urn: &str, job: TraitJobFile) -> Result<String> {
         // Resolve target to queue path (inbox by default, or specified stage)
         let queue_path = if target_urn.starts_with("ckp://") {
             // Parse URN
@@ -3028,7 +3033,7 @@ impl StorageDriver for FileSystemDriver {
         Ok(job.tx_id.clone())
     }
 
-    fn read_jobs(&self, kernel_name: &str) -> Result<Vec<JobHandle>> {
+    async fn read_jobs(&self, kernel_name: &str) -> Result<Vec<JobHandle>> {
         let inbox_path = self.root.join("concepts").join(kernel_name).join("queue/inbox");
 
         if !inbox_path.exists() {
@@ -3061,74 +3066,27 @@ impl StorageDriver for FileSystemDriver {
         Ok(jobs)
     }
 
-    fn archive_job(&self, kernel_name: &str, job: &JobHandle) -> Result<()> {
-        let job_path = PathBuf::from(&job.storage_id);
-        let archive_dir = self.root.join("concepts").join(kernel_name).join("queue/archive");
-
-        fs::create_dir_all(&archive_dir)
-            .map_err(|e| CkpError::IoError(format!("Failed to create archive: {}", e)))?;
-
-        let archive_path = archive_dir.join(job_path.file_name().unwrap());
-
-        fs::rename(&job_path, &archive_path)
-            .map_err(|e| CkpError::IoError(format!("Failed to archive job: {}", e)))?;
-
-        Ok(())
+    async fn archive_job(&self, kernel_name: &str, job: &JobHandle) -> Result<()> {
+        self.archive_job_sync_pub(kernel_name, job)
     }
 
-    fn mint_storage_artifact(
+
+    async fn mint_storage_artifact(
         &self,
         kernel_name: &str,
         instance_id: &str,
         data: JsonValue,
     ) -> Result<String> {
-        let storage_dir = self.root.join("concepts").join(kernel_name).join("storage");
-        fs::create_dir_all(&storage_dir)
-            .map_err(|e| CkpError::IoError(format!("Failed to create storage: {}", e)))?;
-
-        let instance_dir = storage_dir.join(format!("{}.inst", instance_id));
-        fs::create_dir_all(&instance_dir)
-            .map_err(|e| CkpError::IoError(format!("Failed to create instance dir: {}", e)))?;
-
-        // Write payload
-        let payload_path = instance_dir.join("payload.json");
-        let payload_json = serde_json::to_string_pretty(&data)
-            .map_err(|e| CkpError::Json(e))?;
-
-        fs::write(&payload_path, payload_json)
-            .map_err(|e| CkpError::IoError(format!("Failed to write payload: {}", e)))?;
-
-        // Return URN
-        Ok(format!("ckp://{}#storage/{}", kernel_name, instance_id))
+        self.mint_storage_artifact_sync_pub(kernel_name, instance_id, data)
     }
 
-    fn record_transaction(&self, kernel_name: &str, transaction: JsonValue) -> Result<()> {
-        let tx_log = self.root.join("concepts").join(kernel_name).join("tx.jsonl");
 
-        // Ensure parent exists
-        if let Some(parent) = tx_log.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| CkpError::IoError(format!("Failed to create tx dir: {}", e)))?;
-        }
-
-        // Append transaction as single JSON line
-        let tx_line = serde_json::to_string(&transaction)
-            .map_err(|e| CkpError::Json(e))?;
-
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&tx_log)
-            .map_err(|e| CkpError::IoError(format!("Failed to open tx log: {}", e)))?;
-
-        use std::io::Write;
-        writeln!(file, "{}", tx_line)
-            .map_err(|e| CkpError::IoError(format!("Failed to write tx: {}", e)))?;
-
-        Ok(())
+    async fn record_transaction(&self, kernel_name: &str, transaction: JsonValue) -> Result<()> {
+        self.record_transaction_sync_pub(kernel_name, transaction)
     }
 
-    fn resolve_urn(&self, urn: &str) -> Result<StorageLocation> {
+
+    async fn resolve_urn(&self, urn: &str) -> Result<StorageLocation> {
         if urn.starts_with("ckp://") {
             let parsed = UrnResolver::parse(urn)?;
             let kernel_path = self.root.join("concepts").join(&parsed.kernel);
@@ -3163,13 +3121,13 @@ impl StorageDriver for FileSystemDriver {
         }
     }
 
-    fn kernel_exists(&self, kernel_name: &str) -> Result<bool> {
+    async fn kernel_exists(&self, kernel_name: &str) -> Result<bool> {
         let kernel_dir = self.root.join("concepts").join(kernel_name);
         let ontology_path = kernel_dir.join("conceptkernel.yaml");
         Ok(ontology_path.exists())
     }
 
-    fn get_edge_queue(&self, kernel_name: &str, source_kernel: &str) -> Result<StorageLocation> {
+    async fn get_edge_queue(&self, kernel_name: &str, source_kernel: &str) -> Result<StorageLocation> {
         let edge_queue_path = self.root
             .join("concepts")
             .join(kernel_name)
@@ -3177,5 +3135,330 @@ impl StorageDriver for FileSystemDriver {
             .join(source_kernel);
 
         Ok(StorageLocation::Local(edge_queue_path))
+    }
+
+    // ========================================================================
+    // NEW METHODS (v1.3.20)
+    // ========================================================================
+
+    async fn load_ontology(&self, kernel_name: &str) -> Result<String> {
+        let kernel_dir = self.root.join("concepts").join(kernel_name);
+
+        // Try RDF ontology first (ontology.ttl)
+        let rdf_path = kernel_dir.join("ontology.ttl");
+        if rdf_path.exists() {
+            return fs::read_to_string(&rdf_path)
+                .map_err(|e| CkpError::IoError(format!("Failed to read RDF ontology: {}", e)));
+        }
+
+        // Fallback to YAML ontology (conceptkernel.yaml)
+        let yaml_path = kernel_dir.join("conceptkernel.yaml");
+        if yaml_path.exists() {
+            return fs::read_to_string(&yaml_path)
+                .map_err(|e| CkpError::IoError(format!("Failed to read YAML ontology: {}", e)));
+        }
+
+        Err(CkpError::NotFound(format!(
+            "No ontology found for kernel {} (tried ontology.ttl and conceptkernel.yaml)",
+            kernel_name
+        )))
+    }
+
+    async fn save_ontology(&self, kernel_name: &str, ttl: &str) -> Result<()> {
+        let kernel_dir = self.root.join("concepts").join(kernel_name);
+        let rdf_path = kernel_dir.join("ontology.ttl");
+
+        // Ensure kernel directory exists
+        fs::create_dir_all(&kernel_dir)
+            .map_err(|e| CkpError::IoError(format!("Failed to create kernel directory: {}", e)))?;
+
+        // Write RDF ontology
+        fs::write(&rdf_path, ttl)
+            .map_err(|e| CkpError::IoError(format!("Failed to write RDF ontology: {}", e)))?;
+
+        Ok(())
+    }
+
+    async fn load_tool_definition(&self, kernel_name: &str, _tool_name: &str) -> Result<crate::drivers::traits::ToolDefinition> {
+        use crate::drivers::traits::{ExecutionMode, ToolDefinition};
+        use std::collections::HashMap;
+
+        // Load ontology (RDF or YAML)
+        let ontology_content = self.load_ontology(kernel_name).await?;
+
+        // Parse as YAML (if it's RDF, this will fail and we'll handle it)
+        let ontology: serde_yaml::Value = serde_yaml::from_str(&ontology_content)
+            .map_err(|e| CkpError::Config(format!("Failed to parse ontology as YAML: {}", e)))?;
+
+        // Extract kernel_type from metadata.type
+        let kernel_type = ontology
+            .get("metadata")
+            .and_then(|m| m.get("type"))
+            .and_then(|t| t.as_str())
+            .ok_or_else(|| CkpError::Config("Missing metadata.type in ontology".to_string()))?;
+
+        // Determine execution mode
+        let execution_mode = ExecutionMode::from_kernel_type(kernel_type)?;
+
+        // Parse execution configuration from spec.execution (if exists)
+        let tool_config = ontology.get("spec").and_then(|s| s.get("execution"));
+
+        let (container_image, command, args, env_vars, resources) = if let Some(config) = tool_config {
+            let image = config
+                .get("container_image")
+                .and_then(|i| i.as_str())
+                .map(|s| s.to_string());
+
+            let cmd = config
+                .get("command")
+                .and_then(|c| c.as_sequence())
+                .map(|seq| {
+                    seq.iter()
+                        .filter_map(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let args_vec = config
+                .get("args")
+                .and_then(|a| a.as_sequence())
+                .map(|seq| {
+                    seq.iter()
+                        .filter_map(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let env = config
+                .get("env")
+                .and_then(|e| e.as_mapping())
+                .map(|map| {
+                    map.iter()
+                        .filter_map(|(k, v)| {
+                            Some((k.as_str()?.to_string(), v.as_str()?.to_string()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let res = config
+                .get("resources")
+                .and_then(|r| serde_yaml::from_value::<crate::drivers::traits::ResourceRequirements>(r.clone()).ok());
+
+            (image, cmd, args_vec, env, res)
+        } else {
+            (None, Vec::new(), Vec::new(), HashMap::new(), None)
+        };
+
+        Ok(ToolDefinition {
+            name: kernel_name.to_string(),
+            execution_mode,
+            container_image,
+            command,
+            args,
+            env_vars,
+            resources,
+            timeout_seconds: 300, // Default 5 minutes
+        })
+    }
+
+    async fn save_result(&self, kernel_name: &str, job_id: &str, result: &crate::drivers::traits::ToolResponse) -> Result<()> {
+        let results_dir = self.root
+            .join("concepts")
+            .join(kernel_name)
+            .join("queue")
+            .join("results");
+
+        // Ensure results directory exists
+        fs::create_dir_all(&results_dir)
+            .map_err(|e| CkpError::IoError(format!("Failed to create results directory: {}", e)))?;
+
+        // Write result file
+        let result_path = results_dir.join(format!("{}.result", job_id));
+        let result_json = serde_json::to_string_pretty(result)
+            .map_err(|e| CkpError::Json(e))?;
+
+        fs::write(&result_path, result_json)
+            .map_err(|e| CkpError::IoError(format!("Failed to write result: {}", e)))?;
+
+        Ok(())
+    }
+
+    async fn load_result(&self, kernel_name: &str, job_id: &str) -> Result<crate::drivers::traits::ToolResponse> {
+        let result_path = self.root
+            .join("concepts")
+            .join(kernel_name)
+            .join("queue")
+            .join("results")
+            .join(format!("{}.result", job_id));
+
+        if !result_path.exists() {
+            return Err(CkpError::NotFound(format!(
+                "Result not found for job {} in kernel {}",
+                job_id, kernel_name
+            )));
+        }
+
+        // Read result file
+        let result_json = fs::read_to_string(&result_path)
+            .map_err(|e| CkpError::IoError(format!("Failed to read result: {}", e)))?;
+
+        // Parse result
+        let result: crate::drivers::traits::ToolResponse = serde_json::from_str(&result_json)
+            .map_err(|e| CkpError::Json(e))?;
+
+        Ok(result)
+    }
+
+    async fn list_edge_queues(&self, kernel_name: &str) -> Result<Vec<(String, usize)>> {
+        let edges_path = self.root
+            .join("concepts")
+            .join(kernel_name)
+            .join("queue")
+            .join("edges");
+
+        if !edges_path.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut edges = Vec::new();
+        let mut entries = tokio::fs::read_dir(&edges_path)
+            .await
+            .map_err(|e| CkpError::IoError(format!("Failed to read edges dir: {}", e)))?;
+
+        while let Some(entry) = entries.next_entry().await.map_err(|e| CkpError::IoError(e.to_string()))? {
+            if entry.file_type().await.map(|ft| ft.is_dir()).unwrap_or(false) {
+                let source_kernel = entry.file_name().to_string_lossy().to_string();
+
+                // Count files in edge queue
+                let mut count = 0;
+                let edge_queue_path = entry.path();
+                if let Ok(mut queue_entries) = tokio::fs::read_dir(&edge_queue_path).await {
+                    while let Ok(Some(_)) = queue_entries.next_entry().await {
+                        count += 1;
+                    }
+                }
+
+                edges.push((source_kernel, count));
+            }
+        }
+
+        Ok(edges)
+    }
+
+    async fn list_instances(&self, kernel_name: &str) -> Result<Vec<String>> {
+        let storage_path = self.root
+            .join("concepts")
+            .join(kernel_name)
+            .join("storage");
+
+        if !storage_path.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut instances = Vec::new();
+        let mut entries = tokio::fs::read_dir(&storage_path)
+            .await
+            .map_err(|e| CkpError::IoError(format!("Failed to read storage dir: {}", e)))?;
+
+        while let Some(entry) = entries.next_entry().await.map_err(|e| CkpError::IoError(e.to_string()))? {
+            if entry.file_type().await.map(|ft| ft.is_file()).unwrap_or(false) {
+                let instance_id = entry.file_name().to_string_lossy().to_string();
+                let instance_urn = format!("ckp://{}#storage/{}", kernel_name, instance_id);
+                instances.push(instance_urn);
+            }
+        }
+
+        Ok(instances)
+    }
+
+    async fn subscribe_storage_events(&self) -> Result<crate::drivers::traits::StorageEventStream> {
+        // For filesystem, we would need to watch for file changes
+        // For now, return a NotImplemented error
+        // (Use JenaStorage or add notify-based implementation)
+        Err(CkpError::NotImplemented(
+            "subscribe_storage_events not yet implemented for FileSystemDriver - use JenaStorage".to_string(),
+        ))
+    }
+
+    fn root_path(&self) -> Result<PathBuf> {
+        Ok(self.root.clone())
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+// Synchronous helper methods for FileSystemDriver
+// These are called from LocalStorage via spawn_blocking
+impl FileSystemDriver {
+    pub fn archive_job_sync_pub(&self, kernel_name: &str, job: &JobHandle) -> Result<()> {
+        let job_path = PathBuf::from(&job.storage_id);
+        let archive_dir = self.root.join("concepts").join(kernel_name).join("queue/archive");
+
+        std::fs::create_dir_all(&archive_dir)
+            .map_err(|e| CkpError::IoError(format!("Failed to create archive: {}", e)))?;
+
+        let archive_path = archive_dir.join(job_path.file_name().unwrap());
+
+        std::fs::rename(&job_path, &archive_path)
+            .map_err(|e| CkpError::IoError(format!("Failed to archive job: {}", e)))?;
+
+        Ok(())
+    }
+
+    pub fn mint_storage_artifact_sync_pub(
+        &self,
+        kernel_name: &str,
+        instance_id: &str,
+        data: JsonValue,
+    ) -> Result<String> {
+        let storage_dir = self.root.join("concepts").join(kernel_name).join("storage");
+        std::fs::create_dir_all(&storage_dir)
+            .map_err(|e| CkpError::IoError(format!("Failed to create storage: {}", e)))?;
+
+        let instance_dir = storage_dir.join(format!("{}.inst", instance_id));
+        std::fs::create_dir_all(&instance_dir)
+            .map_err(|e| CkpError::IoError(format!("Failed to create instance dir: {}", e)))?;
+
+        // Write payload
+        let payload_path = instance_dir.join("payload.json");
+        let payload_json = serde_json::to_string_pretty(&data)
+            .map_err(|e| CkpError::Json(e))?;
+
+        std::fs::write(&payload_path, payload_json)
+            .map_err(|e| CkpError::IoError(format!("Failed to write payload: {}", e)))?;
+
+        // Return URN
+        Ok(format!("ckp://{}#storage/{}", kernel_name, instance_id))
+    }
+
+    pub fn record_transaction_sync_pub(&self, kernel_name: &str, transaction: JsonValue) -> Result<()> {
+        let tx_log = self.root.join("concepts").join(kernel_name).join("tx.jsonl");
+
+        // Ensure parent exists
+        if let Some(parent) = tx_log.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| CkpError::IoError(format!("Failed to create tx dir: {}", e)))?;
+        }
+
+        // Append transaction as single JSON line
+        let tx_line = serde_json::to_string(&transaction)
+            .map_err(|e| CkpError::Json(e))?;
+
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&tx_log)
+            .map_err(|e| CkpError::IoError(format!("Failed to open tx log: {}", e)))?;
+
+        use std::io::Write;
+        writeln!(file, "{}", tx_line)
+            .map_err(|e| CkpError::IoError(format!("Failed to write tx: {}", e)))?;
+
+        Ok(())
     }
 }

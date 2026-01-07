@@ -138,8 +138,8 @@ impl EdgeKernel {
         // Validate predicate
         self.validate_predicate(predicate)?;
 
-        // Generate edge URN
-        let urn = EdgeMetadata::generate_urn(predicate, source, target, "v1.3.16");
+        // Generate edge URN (v1.3.20 format)
+        let urn = EdgeMetadata::generate_urn(predicate, source, target, "v1.3.20");
 
         // Check if edge already exists
         if self.get_edge(&urn)?.is_some() {
@@ -150,7 +150,7 @@ impl EdgeKernel {
         }
 
         // Create metadata
-        let metadata = EdgeMetadata::new(predicate, source, target, "v1.3.16");
+        let metadata = EdgeMetadata::new(predicate, source, target, "v1.3.20");
 
         // Create edge directory
         let edge_dir = self.edges_dir.join(&metadata.get_edge_name());

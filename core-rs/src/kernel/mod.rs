@@ -6,6 +6,7 @@ mod kernel;
 mod manager;
 mod builder;
 pub mod api;
+pub mod metadata;
 
 pub use governor::ConceptKernelGovernor;
 pub use pid::PidFile;
@@ -13,6 +14,7 @@ pub use kernel::{Kernel, JobFile, Job, InboxIterator};
 pub use manager::{KernelManager, KernelStatus, QueueStats, RunningPids, StartResult};
 pub use builder::KernelBuilder;
 pub use api::{KernelContext, AdoptedContext, EdgeResponse};
+pub use metadata::{KernelMetadata, KernelMetadataInfo, KernelSpec};
 
 #[cfg(test)]
 mod tests {

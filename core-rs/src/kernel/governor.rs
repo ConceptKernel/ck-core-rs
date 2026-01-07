@@ -8,9 +8,9 @@
 
 use crate::errors::{CkpError, Result};
 use crate::kernel::PidFile;
-use crate::ontology::{OntologyReader, OntologyLibrary};
+use crate::ontology::{OntologyReader, OntologyLibrary, OntologyValidator};
 use crate::urn::UrnResolver;
-use crate::drivers::{StorageDriver, FileSystemDriver};
+use crate::drivers::{StorageDriver, FileSystemDriver, TransportDriver};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher, Config as NotifyConfig};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -27,11 +27,15 @@ pub struct ConceptKernelGovernor {
     root: PathBuf,
     #[allow(dead_code)]
     kernel_type: String,
+    /// Entrypoint from ontology (e.g., "tool/tool.js", "builtin/passthrough")
+    entrypoint: Option<String>,
     tool_path: PathBuf,
     tool_command: String,
     log_file: Arc<Mutex<fs::File>>,
     _pid_file: PidFile,
     driver: Arc<dyn StorageDriver>,
+    /// Transport driver for NATS-based communication (optional)
+    transport_driver: Option<Arc<dyn TransportDriver>>,
     /// RDF ontology library (Phase 4 Stage 0) - loaded on startup
     ontology_library: Option<Arc<OntologyLibrary>>,
 }
@@ -42,14 +46,19 @@ impl std::fmt::Debug for ConceptKernelGovernor {
             .field("kernel_name", &self.kernel_name)
             .field("root", &self.root)
             .field("kernel_type", &self.kernel_type)
+            .field("entrypoint", &self.entrypoint)
             .field("tool_path", &self.tool_path)
             .field("tool_command", &self.tool_command)
             .field("log_file", &"<File>")
             .field("_pid_file", &self._pid_file)
+            .field("transport_driver", &self.transport_driver.as_ref().map(|_| "<TransportDriver>"))
             .field("ontology_library", &self.ontology_library.as_ref().map(|_| "<OntologyLibrary>"))
             .finish()
     }
 }
+
+// Git lifecycle validation has been moved to the async governor startup (ckp.rs)
+// to enable proper event publishing via KernelEventPublisher
 
 impl ConceptKernelGovernor {
     /// Create new governor for a kernel
@@ -103,15 +112,19 @@ impl ConceptKernelGovernor {
         }
 
         eprintln!("[Governor] Reading ontology...");
-        // Read ontology to determine kernel type
+        // Read ontology to determine kernel type and entrypoint
         let ontology_reader = OntologyReader::new(root.clone());
         let ontology = ontology_reader.read_by_kernel_name(&kernel_name)?;
         let kernel_type = ontology.metadata.kernel_type.clone();
+        let entrypoint = ontology.metadata.entrypoint.clone();
         eprintln!("[Governor] Kernel type: {}", kernel_type);
+        eprintln!("[Governor] Entrypoint: {:?}", entrypoint);
 
-        // Determine tool path and command
-        eprintln!("[Governor] Determining tool path for type: {}", kernel_type);
-        let (tool_path, tool_command) = if kernel_type.starts_with("python:") {
+        // Determine tool path and command (skip for builtin/passthrough)
+        let (tool_path, tool_command) = if entrypoint.as_deref() == Some("builtin/passthrough") {
+            eprintln!("[Governor] Using builtin passthrough mode - no tool path needed");
+            (kernel_dir.clone(), String::new()) // Placeholder, won't be used
+        } else if kernel_type.starts_with("python:") {
             let path = kernel_dir.join("tool/tool.py");
             eprintln!("[Governor] Python tool path: {}", path.display());
             (path, "python3".to_string())
@@ -183,28 +196,32 @@ impl ConceptKernelGovernor {
         eprintln!("[Governor] Final tool path: {}", tool_path.display());
         eprintln!("[Governor] Tool command: {:?}", tool_command);
 
-        // Check if tool exists
-        eprintln!("[Governor] Checking if tool exists...");
-        if !tool_path.exists() {
-            eprintln!("[Governor] ERROR: Tool not found at {}", tool_path.display());
-            return Err(CkpError::Governor(format!(
-                "Tool not found: {}",
-                tool_path.display()
-            )));
+        // Check if tool exists (skip for builtin/passthrough)
+        if entrypoint.as_deref() != Some("builtin/passthrough") {
+            eprintln!("[Governor] Checking if tool exists...");
+            if !tool_path.exists() {
+                eprintln!("[Governor] ERROR: Tool not found at {}", tool_path.display());
+                return Err(CkpError::Governor(format!(
+                    "Tool not found: {}",
+                    tool_path.display()
+                )));
+            }
+            eprintln!("[Governor] Tool exists!");
         }
-        eprintln!("[Governor] Tool exists!");
 
-        // Check if inbox exists
-        let inbox = kernel_dir.join("queue/inbox");
-        eprintln!("[Governor] Checking inbox: {}", inbox.display());
-        if !inbox.exists() {
-            eprintln!("[Governor] ERROR: Inbox not found");
-            return Err(CkpError::Governor(format!(
-                "Inbox not found: {}",
-                inbox.display()
-            )));
+        // Check if inbox exists (skip for builtin/passthrough - NATS-based)
+        if entrypoint.as_deref() != Some("builtin/passthrough") {
+            let inbox = kernel_dir.join("queue/inbox");
+            eprintln!("[Governor] Checking inbox: {}", inbox.display());
+            if !inbox.exists() {
+                eprintln!("[Governor] ERROR: Inbox not found");
+                return Err(CkpError::Governor(format!(
+                    "Inbox not found: {}",
+                    inbox.display()
+                )));
+            }
+            eprintln!("[Governor] Inbox exists!");
         }
-        eprintln!("[Governor] Inbox exists!");
 
         // Create PID file (prevents duplicate governors)
         let pid_path = kernel_dir.join("tool/.governor.pid");
@@ -229,7 +246,31 @@ impl ConceptKernelGovernor {
         let ontology_library = match OntologyLibrary::new(root.clone()) {
             Ok(lib) => {
                 eprintln!("[Governor] Ontology library loaded successfully");
-                Some(Arc::new(lib))
+                let lib_arc = Arc::new(lib);
+
+                // Validate ontologies (Phase 4 Stage 1)
+                eprintln!("[Governor] Validating ontologies...");
+                let validator = OntologyValidator::new(lib_arc.clone());
+                match validator.validate_ontologies() {
+                    Ok(report) => {
+                        if report.passed {
+                            eprintln!("[Governor] ✅ Ontology validation passed");
+                        } else {
+                            eprintln!("[Governor] ⚠️  Ontology validation found issues:");
+                            eprintln!("[Governor]    Errors: {}", report.errors.len());
+                            eprintln!("[Governor]    Warnings: {}", report.warnings.len());
+                            if !report.errors.is_empty() {
+                                eprintln!("[Governor] ⚠️  Continuing with validation errors - some features may not work correctly");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[Governor] Warning: Ontology validation failed: {}", e);
+                        eprintln!("[Governor] Continuing without validation");
+                    }
+                }
+
+                Some(lib_arc)
             }
             Err(e) => {
                 eprintln!("[Governor] Warning: Could not load ontology library: {}", e);
@@ -242,11 +283,13 @@ impl ConceptKernelGovernor {
             kernel_name: kernel_name.clone(),
             root: kernel_dir,
             kernel_type: kernel_type.clone(),
+            entrypoint,
             tool_path,
             tool_command,
             log_file: Arc::new(Mutex::new(log_file)),
             _pid_file: pid_file,
             driver,
+            transport_driver: None, // No transport driver in basic constructor
             ontology_library,
         };
 
@@ -261,10 +304,567 @@ impl ConceptKernelGovernor {
         Ok(governor)
     }
 
+    /// Create new governor with explicit drivers and pre-queried config
+    ///
+    /// This constructor is used when drivers have been pre-created from .ckproject settings
+    /// and kernel config has been queried from Jena in an async context
+    pub fn new_with_drivers(
+        kernel_name_or_urn: &str,
+        root: PathBuf,
+        kernel_type: String,
+        entrypoint: Option<String>,
+        storage_driver: Arc<dyn StorageDriver>,
+        transport_driver: Option<Arc<dyn TransportDriver>>,
+    ) -> Result<Self> {
+        eprintln!("[Governor] Initializing with drivers for kernel: {}", kernel_name_or_urn);
+        eprintln!("[Governor] Project root: {}", root.display());
+
+        // Security check: warn if running as root
+        #[cfg(unix)]
+        {
+            let current_uid = unsafe { libc::getuid() };
+            if current_uid == 0 {
+                eprintln!("╔═══════════════════════════════════════════════════════════════╗");
+                eprintln!("║ ⚠️  WARNING: GOVERNOR RUNNING AS ROOT                        ║");
+                eprintln!("║                                                               ║");
+                eprintln!("║ This is a SECURITY RISK and should be avoided!               ║");
+                eprintln!("║ Kernel: {:<51} ║", kernel_name_or_urn);
+                eprintln!("║                                                               ║");
+                eprintln!("║ Please run governors as a normal user, not root.             ║");
+                eprintln!("╚═══════════════════════════════════════════════════════════════╝");
+            }
+        }
+
+        // Parse URN if provided
+        let kernel_name = if kernel_name_or_urn.starts_with("ckp://") {
+            let parsed = UrnResolver::parse(kernel_name_or_urn)?;
+            eprintln!(
+                "[Governor] Parsed URN {} -> kernel: {}",
+                kernel_name_or_urn, parsed.kernel
+            );
+            parsed.kernel
+        } else {
+            kernel_name_or_urn.to_string()
+        };
+
+        let concepts_dir = root.join("concepts");
+        let kernel_dir = concepts_dir.join(&kernel_name);
+
+        // Git lifecycle validation moved to async ckp.rs (v1.3.20)
+        // This allows proper NATS event publishing via KernelEventPublisher
+
+        eprintln!("[Governor] Kernel directory: {}", kernel_dir.display());
+        eprintln!("[Governor] Kernel type from Jena: {}", kernel_type);
+        eprintln!("[Governor] Entrypoint from Jena: {:?}", entrypoint);
+
+        // Determine tool path and command (skip for builtin/passthrough)
+        // Check BOTH entrypoint AND kernel_type for builtin mode
+        let is_builtin_passthrough = entrypoint.as_deref() == Some("builtin/passthrough")
+            || entrypoint.as_deref() == Some("passthrough")
+            || kernel_type.starts_with("passthrough:");
+
+        let (tool_path, tool_command) = if is_builtin_passthrough {
+            eprintln!("[Governor] Using builtin passthrough mode - no tool path needed");
+            if transport_driver.is_none() {
+                return Err(CkpError::Governor(
+                    "builtin/passthrough mode requires transport driver (NATS)".to_string()
+                ));
+            }
+            (kernel_dir.clone(), String::new()) // Placeholder, won't be used
+        } else if kernel_type.starts_with("python:") {
+            let path = kernel_dir.join("tool/tool.py");
+            eprintln!("[Governor] Python tool path: {}", path.display());
+            (path, "python3".to_string())
+        } else if kernel_type.starts_with("rust:") {
+            // For rust kernels, look for the compiled binary in the entrypoint
+            let entry = entrypoint
+                .as_ref()
+                .ok_or_else(|| CkpError::Governor(format!(
+                    "Rust kernel {} missing entrypoint in ontology",
+                    kernel_name
+                )))?;
+
+            eprintln!("[Governor] Rust entrypoint: {}", entry);
+
+            // Find the binary name from the entrypoint
+            let binary_name = entry.split('/').last().unwrap_or("tool");
+            eprintln!("[Governor] Binary name: {}", binary_name);
+
+            // Priority order for finding the binary
+            let entrypoint_path = kernel_dir.join(entry);
+            let tool_rs_binary = kernel_dir.join("tool/rs").join(binary_name);
+            let tool_binary = kernel_dir.join("tool").join(binary_name);
+            let release_binary = if entry.contains("target/release") {
+                entrypoint_path.clone()
+            } else {
+                kernel_dir.join("tool/rs/target/release").join(binary_name)
+            };
+
+            if entrypoint_path.exists() && entrypoint_path.is_file() {
+                eprintln!("[Governor] Using entrypoint path directly");
+                (entrypoint_path, String::new())
+            } else if tool_rs_binary.exists() {
+                eprintln!("[Governor] Using tool/rs binary");
+                (tool_rs_binary, String::new())
+            } else if tool_binary.exists() {
+                eprintln!("[Governor] Using tool binary");
+                (tool_binary, String::new())
+            } else if release_binary.exists() {
+                eprintln!("[Governor] Using target/release binary");
+                (release_binary, String::new())
+            } else {
+                eprintln!("[Governor] ERROR: Binary not found");
+                (entrypoint_path, String::new())
+            }
+        } else {
+            let path = kernel_dir.join("tool/tool.js");
+            eprintln!("[Governor] Node.js tool path: {}", path.display());
+            (path, "node".to_string())
+        };
+
+        eprintln!("[Governor] Final tool path: {}", tool_path.display());
+        eprintln!("[Governor] Tool command: {:?}", tool_command);
+
+        // Check if tool exists (skip for builtin/passthrough)
+        if entrypoint.as_deref() != Some("builtin/passthrough") {
+            eprintln!("[Governor] Checking if tool exists...");
+            if !tool_path.exists() {
+                eprintln!("[Governor] ERROR: Tool not found at {}", tool_path.display());
+                return Err(CkpError::Governor(format!(
+                    "Tool not found: {}",
+                    tool_path.display()
+                )));
+            }
+            eprintln!("[Governor] Tool exists!");
+        }
+
+        // Check if inbox exists (skip for builtin/passthrough - NATS-based)
+        if entrypoint.as_deref() != Some("builtin/passthrough") {
+            let inbox = kernel_dir.join("queue/inbox");
+            eprintln!("[Governor] Checking inbox: {}", inbox.display());
+            if !inbox.exists() {
+                eprintln!("[Governor] ERROR: Inbox not found");
+                return Err(CkpError::Governor(format!(
+                    "Inbox not found: {}",
+                    inbox.display()
+                )));
+            }
+            eprintln!("[Governor] Inbox exists!");
+        }
+
+        // Create PID file (prevents duplicate governors)
+        let pid_path = kernel_dir.join("tool/.governor.pid");
+        eprintln!("[Governor] Creating PID file: {}", pid_path.display());
+        let pid_file = PidFile::create(&pid_path)?;
+        eprintln!("[Governor] PID file created!");
+
+        // Set up logging
+        let logs_dir = kernel_dir.join("logs");
+        fs::create_dir_all(&logs_dir)?;
+        let log_path = logs_dir.join(format!("{}.log", kernel_name));
+        let log_file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)?;
+
+        // Load ontology library (Phase 4 Stage 0)
+        eprintln!("[Governor] Loading ontology library...");
+        let ontology_library = match OntologyLibrary::new(root.clone()) {
+            Ok(lib) => {
+                eprintln!("[Governor] Ontology library loaded successfully");
+                let lib_arc = Arc::new(lib);
+
+                // Validate ontologies (Phase 4 Stage 1)
+                eprintln!("[Governor] Validating ontologies...");
+                let validator = OntologyValidator::new(lib_arc.clone());
+                match validator.validate_ontologies() {
+                    Ok(report) => {
+                        if report.passed {
+                            eprintln!("[Governor] ✅ Ontology validation passed");
+                        } else {
+                            eprintln!("[Governor] ⚠️  Ontology validation found issues:");
+                            eprintln!("[Governor]    Errors: {}", report.errors.len());
+                            eprintln!("[Governor]    Warnings: {}", report.warnings.len());
+                            if !report.errors.is_empty() {
+                                eprintln!("[Governor] ⚠️  Continuing with validation errors - some features may not work correctly");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[Governor] Warning: Ontology validation failed: {}", e);
+                        eprintln!("[Governor] Continuing without validation");
+                    }
+                }
+
+                Some(lib_arc)
+            }
+            Err(e) => {
+                eprintln!("[Governor] Warning: Could not load ontology library: {}", e);
+                eprintln!("[Governor] Continuing without RDF ontology support");
+                None
+            }
+        };
+
+        let governor = Self {
+            kernel_name: kernel_name.clone(),
+            root: kernel_dir,
+            kernel_type: kernel_type.clone(),
+            entrypoint,
+            tool_path,
+            tool_command,
+            log_file: Arc::new(Mutex::new(log_file)),
+            _pid_file: pid_file,
+            driver: storage_driver,
+            transport_driver,
+            ontology_library,
+        };
+
+        governor.log(&format!(
+            "[ConceptKernel] [{}] Starting governor with drivers (PID: {}, Type: {}, Transport: {})",
+            kernel_name,
+            std::process::id(),
+            kernel_type,
+            if governor.transport_driver.is_some() { "NATS" } else { "None" }
+        ));
+
+        Ok(governor)
+    }
+
+    /// Load kernel configuration from Jena (FILELESS MODE)
+    ///
+    /// Queries Jena for kernel metadata instead of reading conceptkernel.yaml
+    /// This is a public static method that can be called from async contexts
+    pub async fn load_kernel_config_from_jena(
+        kernel_name: &str,
+        storage_driver: &Arc<dyn StorageDriver>,
+    ) -> Result<(String, Option<String>)> {
+        use crate::drivers::storage::JenaStorage;
+
+        // Try to downcast to JenaStorage
+        let jena = storage_driver.as_any()
+            .downcast_ref::<JenaStorage>()
+            .ok_or_else(|| CkpError::Governor(
+                "Fileless mode requires JenaStorage driver".to_string()
+            ))?;
+
+        // Query Jena for kernel metadata
+        let sparql_query = format!(
+            r#"PREFIX ckp: <urn:ckp:>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+
+SELECT ?type ?entrypoint ?runtime WHERE {{
+    BIND(<ckp://{}:v1.0.0> as ?kernel)
+    ?kernel a ckp:Kernel ;
+            ckp:type ?type ;
+            ckp:runtime ?runtime .
+    OPTIONAL {{ ?kernel ckp:entrypoint ?entrypoint }}
+}}"#,
+            kernel_name
+        );
+
+        eprintln!("[Governor] Executing SPARQL query for kernel config...");
+
+        let result = jena.query_sparql_json(&sparql_query).await
+            .map_err(|e| CkpError::Governor(format!("Failed to query Jena for kernel config: {}", e)))?;
+
+        // Parse SPARQL results
+        let bindings = result
+            .get("results")
+            .and_then(|r| r.get("bindings"))
+            .and_then(|b| b.as_array())
+            .ok_or_else(|| CkpError::Governor("Invalid SPARQL results format".to_string()))?;
+
+        if bindings.is_empty() {
+            return Err(CkpError::Governor(format!(
+                "Kernel {} not found in Jena. Did you register it with `ck edge register`?",
+                kernel_name
+            )));
+        }
+
+        let binding = &bindings[0];
+
+        let kernel_type = binding
+            .get("type")
+            .and_then(|t| t.get("value"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| CkpError::Governor("Missing kernel type in Jena metadata".to_string()))?
+            .to_string();
+
+        let entrypoint = binding
+            .get("entrypoint")
+            .and_then(|e| e.get("value"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        eprintln!("[Governor] ✅ Loaded kernel config from Jena (fileless mode)");
+        eprintln!("[Governor]    Type: {}", kernel_type);
+        eprintln!("[Governor]    Entrypoint: {:?}", entrypoint);
+
+        Ok((kernel_type, entrypoint))
+    }
+
+    /// Load edges from Jena for routing (FILELESS MODE)
+    ///
+    /// Queries Jena for registered edges instead of reading ontology YAML
+    async fn load_edges_from_jena(&self) -> Result<Vec<(String, String)>> {
+        use crate::drivers::storage::JenaStorage;
+
+        // Try to downcast to JenaStorage
+        let jena = self.driver.as_any()
+            .downcast_ref::<JenaStorage>()
+            .ok_or_else(|| CkpError::Governor(
+                "Fileless mode requires JenaStorage driver".to_string()
+            ))?;
+
+        // Query for all edges where this kernel is the source
+        // Uses BIND/REPLACE to extract kernel names from URIs
+        let sparql = format!(
+            r#"PREFIX ckp: <https://conceptkernel.org/ontology#>
+
+SELECT ?target ?predicate WHERE {{
+    GRAPH ?g {{
+        ?edge a ckp:EdgeConnection ;
+              ckp:hasSource ?sourceUrn ;
+              ckp:hasTarget ?targetUrn ;
+              ckp:hasPredicate ?predicateUrn .
+    }}
+
+    BIND(REPLACE(STR(?sourceUrn), ".*Kernel-", "") AS ?source)
+    BIND(REPLACE(STR(?targetUrn), ".*Kernel-", "") AS ?target)
+    BIND(REPLACE(STR(?predicateUrn), ".*Edge-", "") AS ?predicate)
+
+    FILTER(?source = "{}")
+}}
+ORDER BY ?predicate ?target"#,
+            self.kernel_name
+        );
+
+        eprintln!("[Governor] [{}] Querying Jena for edges...", self.kernel_name);
+        eprintln!("[Governor] [{}] SPARQL Query:\n{}", self.kernel_name, sparql);
+
+        let result = jena.query_sparql_json(&sparql).await
+            .map_err(|e| CkpError::Governor(format!("Failed to query edges from Jena: {}", e)))?;
+
+        eprintln!("[Governor] [{}] Query result: {}", self.kernel_name, serde_json::to_string_pretty(&result).unwrap_or_default());
+
+        let bindings = result
+            .get("results")
+            .and_then(|r| r.get("bindings"))
+            .and_then(|b| b.as_array())
+            .ok_or_else(|| CkpError::Governor("Invalid SPARQL edge query results".to_string()))?;
+
+        let mut edges = Vec::new();
+        for binding in bindings {
+            let target = binding
+                .get("target")
+                .and_then(|t| t.get("value"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let predicate = binding
+                .get("predicate")
+                .and_then(|p| p.get("value"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            if !target.is_empty() && !predicate.is_empty() {
+                edges.push((predicate, target));
+            }
+        }
+
+        eprintln!("[Governor] [{}] Found {} edges in Jena", self.kernel_name, edges.len());
+        for (predicate, target) in &edges {
+            eprintln!("[Governor] [{}]   -> {} --[{}]--> {}", self.kernel_name, self.kernel_name, predicate, target);
+        }
+
+        Ok(edges)
+    }
+
+    /// Start the governor
+    ///
+    /// Dispatches to either filesystem watching mode or builtin passthrough mode
+    /// based on the entrypoint field OR kernel type from the ontology
+    pub async fn start(&self, shutdown: Arc<AtomicBool>) -> Result<()> {
+        // Check BOTH entrypoint AND kernel_type for builtin mode
+        let is_builtin_passthrough = self.entrypoint.as_deref() == Some("builtin/passthrough")
+            || self.entrypoint.as_deref() == Some("passthrough")
+            || self.kernel_type.starts_with("passthrough:");
+
+        if is_builtin_passthrough {
+            // Use NATS-based diskless mode (no tool execution)
+            self.log("[ConceptKernel] Starting in builtin/passthrough mode (NATS-based)");
+            self.start_builtin_passthrough(shutdown).await
+        } else {
+            // Use filesystem watching mode (existing behavior)
+            self.log("[ConceptKernel] Starting in filesystem watch mode");
+            self.start_filesystem_watch(shutdown).await
+        }
+    }
+
+    /// Start builtin passthrough mode (NATS-based, no tool execution)
+    ///
+    /// This mode is used for kernels with `entrypoint: builtin/passthrough` in their ontology.
+    /// Jobs are received via NATS, processed with simple passthrough logic, and results
+    /// are published back to NATS and routed to edges.
+    async fn start_builtin_passthrough(&self, shutdown: Arc<AtomicBool>) -> Result<()> {
+        use futures::StreamExt;
+
+        // Get transport driver (required for this mode)
+        let transport = self.transport_driver.as_ref().ok_or_else(|| {
+            CkpError::Governor("builtin/passthrough mode requires transport driver".to_string())
+        })?;
+
+        self.log(&format!(
+            "[ConceptKernel] [{}] Status: GOVERNOR (builtin/passthrough - FILELESS MODE)",
+            self.kernel_name
+        ));
+
+        // Load edges from Jena (no filesystem reads!)
+        self.log(&format!(
+            "[ConceptKernel] [{}] Loading edge routing from Jena...",
+            self.kernel_name
+        ));
+
+        let edges = self.load_edges_from_jena().await?;
+
+        self.log(&format!(
+            "[ConceptKernel] [{}] Loaded {} edges from Jena for routing",
+            self.kernel_name,
+            edges.len()
+        ));
+
+        self.log(&format!(
+            "[ConceptKernel] [{}] Subscribing to NATS inbox: ckp.{}.inbox",
+            self.kernel_name, self.kernel_name
+        ));
+
+        // Subscribe to NATS inbox for incoming jobs
+        let mut job_stream = transport.subscribe_inbox(&self.kernel_name).await
+            .map_err(|e| CkpError::Transport(format!("Failed to subscribe to inbox: {}", e)))?;
+
+        self.log(&format!(
+            "[ConceptKernel] [{}] Ready - Waiting for jobs from NATS",
+            self.kernel_name
+        ));
+
+        // Main event loop: process jobs from NATS
+        loop {
+            tokio::select! {
+                // Handle shutdown signal
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                    if shutdown.load(Ordering::SeqCst) {
+                        self.log(&format!(
+                            "[ConceptKernel] [{}] Received shutdown signal, exiting gracefully",
+                            self.kernel_name
+                        ));
+                        break;
+                    }
+                }
+
+                // Process incoming jobs
+                Some(job) = job_stream.next() => {
+                    self.log(&format!(
+                        "[ConceptKernel] [{}] Job received via NATS: {}",
+                        self.kernel_name, job.job_id
+                    ));
+
+                    // Process job with passthrough logic (no tool execution)
+                    match self.process_passthrough_job(job).await {
+                        Ok(response) => {
+                            // Publish result via NATS
+                            if let Err(e) = transport.publish_response(&self.kernel_name, response.clone()).await {
+                                eprintln!(
+                                    "[ConceptKernel] [{}] Failed to publish result: {}",
+                                    self.kernel_name, e
+                                );
+                            } else {
+                                self.log(&format!(
+                                    "[ConceptKernel] [{}] Published result: {}",
+                                    self.kernel_name, response.job_id
+                                ));
+                            }
+
+                            // Route to edges loaded from Jena
+                            for (predicate, target) in &edges {
+                                self.log(&format!(
+                                    "[ConceptKernel] [{}] Routing to edge: {} --[{}]--> {}",
+                                    self.kernel_name, self.kernel_name, predicate, target
+                                ));
+
+                                // Convert response back to job for routing
+                                use crate::drivers::JobMessage;
+                                let routed_job = JobMessage {
+                                    job_id: response.job_id.clone(),
+                                    tool: target.clone(),
+                                    args: response.output.clone(),
+                                    timestamp: response.timestamp.clone(),
+                                    source: self.kernel_name.clone(),
+                                };
+
+                                // Publish to target kernel's inbox
+                                if let Err(e) = transport.publish_job(target, routed_job).await {
+                                    eprintln!(
+                                        "[ConceptKernel] [{}] Failed to route to {}: {}",
+                                        self.kernel_name, target, e
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("[ConceptKernel] [{}] Job processing failed: {}", self.kernel_name, e);
+                        }
+                    }
+                }
+            }
+        }
+
+        self.log(&format!(
+            "[ConceptKernel] [{}] Builtin passthrough mode shutdown complete",
+            self.kernel_name
+        ));
+
+        Ok(())
+    }
+
+    /// Process job with builtin passthrough logic (no tool execution)
+    ///
+    /// Simulates successful job processing for passthrough kernels
+    async fn process_passthrough_job(&self, job: crate::drivers::JobMessage) -> Result<crate::drivers::ToolResponse> {
+        use crate::drivers::ToolResponse;
+
+        let start_time = std::time::Instant::now();
+
+        self.log(&format!(
+            "[ConceptKernel] [{}] Processing job: {} (builtin/passthrough)",
+            self.kernel_name, job.job_id
+        ));
+
+        // Passthrough logic: simply acknowledge the job
+        let output = serde_json::json!({
+            "status": "success",
+            "message": "Job processed successfully (builtin/passthrough)",
+            "kernel": self.kernel_name,
+            "input": job.args
+        });
+
+        let duration_ms = start_time.elapsed().as_millis() as u64;
+
+        Ok(ToolResponse {
+            job_id: job.job_id,
+            status: "success".to_string(),
+            output,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            duration_ms,
+            error: None,
+        })
+    }
+
     /// Start watching queues (event-driven with notify crate)
     ///
     /// Uses filesystem events for instant detection with fallback polling
-    pub async fn start(&self, shutdown: Arc<AtomicBool>) -> Result<()> {
+    async fn start_filesystem_watch(&self, shutdown: Arc<AtomicBool>) -> Result<()> {
         let inbox_path = self.get_inbox_path();
         let edges_path = self.get_edges_path();
 
@@ -452,7 +1052,7 @@ impl ConceptKernelGovernor {
     /// Check for existing jobs (used on startup and polling fallback)
     async fn check_and_process_existing_jobs(&self, tool_running: Arc<AtomicBool>) {
         // Check inbox using driver
-        if let Ok(jobs) = self.driver.read_jobs(&self.kernel_name) {
+        if let Ok(jobs) = self.driver.read_jobs(&self.kernel_name).await {
             if !jobs.is_empty() && !tool_running.load(Ordering::SeqCst) {
                 tool_running.store(true, Ordering::SeqCst);
                 self.log(&format!(

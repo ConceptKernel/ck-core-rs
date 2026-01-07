@@ -108,6 +108,42 @@ pub enum CkpError {
 
     #[error("Build error: {0}")]
     BuildError(String),
+
+    #[error("Transport error: {0}")]
+    Transport(String),
+
+    #[error("Task join error: {0}")]
+    TaskJoin(String),
+
+    #[error("Not implemented: {0}")]
+    NotImplemented(String),
+
+    #[error("HTTP error: {0}")]
+    Http(String),
+
+    #[error("Not found: {0}")]
+    NotFound(String),
+
+    #[error("Config error: {0}")]
+    Config(String),
+
+    #[error("NATS error: {0}")]
+    NatsError(String),
+
+    #[error("SPARQL error: {0}")]
+    SparqlError(String),
+
+    #[error("HTTP client error: {0}")]
+    HttpClient(String),
+
+    #[error("JSON parse error: {0}")]
+    JsonParse(String),
+
+    #[error("Encoding error: {0}")]
+    Encoding(String),
+
+    #[error("Validation error: {0}")]
+    Validation(String),
 }
 
 impl From<regex::Error> for CkpError {
@@ -119,6 +155,12 @@ impl From<regex::Error> for CkpError {
 impl From<crate::ontology::library::OntologyError> for CkpError {
     fn from(err: crate::ontology::library::OntologyError) -> Self {
         CkpError::Ontology(err.to_string())
+    }
+}
+
+impl From<reqwest::Error> for CkpError {
+    fn from(err: reqwest::Error) -> Self {
+        CkpError::Http(err.to_string())
     }
 }
 
