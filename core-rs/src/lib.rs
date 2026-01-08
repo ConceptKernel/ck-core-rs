@@ -48,6 +48,10 @@ pub mod compliance;
 pub mod cache;
 pub mod storage;
 pub mod daemon;
+pub mod semantic_validator;
+pub mod agent_logging;
+pub mod event_publisher;
+pub mod edge_event_publisher;
 
 pub use urn::{UrnResolver, UrnValidator, ParsedUrn, ParsedEdgeUrn, ParsedQueryUrn, ParsedQueryUrnV2};
 pub use errors::CkpError;
@@ -64,10 +68,11 @@ pub use compliance::{AuditLogger, GdprChecker, RetentionPolicy, AuditEntry, Cons
 pub use cache::{PackageManager, PackageInfo};
 pub use storage::{InstanceScanner, InstanceSummary, InstanceDetail};
 pub use drivers::{GitDriver, VersionBump, VersionDriver, VersionInfo, VersionBackend, VersionDriverFactory, VersionedKernel};
-pub use daemon::EdgeRouterDaemon;
+pub use daemon::{EdgeRouterDaemon, EdgeRouterDaemonAsync};
+pub use event_publisher::{KernelEventPublisher, KernelEvent, KernelEventType};
 
-/// Version of the CKP protocol (upgrading to 1.3.14 for multi-project support)
-pub const VERSION: &str = "1.3.14";
+/// Version of the CKP protocol (v1.3.20-alpha.1: Git validation, event publisher, driver abstraction)
+pub const VERSION: &str = "1.3.20-alpha.1";
 
 /// Default concepts root directory
 pub const DEFAULT_CONCEPTS_ROOT: &str = "/concepts";

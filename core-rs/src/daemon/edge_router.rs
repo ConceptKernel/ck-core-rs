@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::collections::HashMap;
+use std::fs;
 
 pub struct EdgeRouterDaemon {
     root: PathBuf,
@@ -60,6 +61,12 @@ impl EdgeRouterDaemon {
         self.log("[EdgeRouter] Starting daemon...");
         self.log(&format!("[EdgeRouter] Project: {}", self.root.display()));
 
+        // Write daemon PID for tracking
+        let pid = std::process::id();
+        let pid_file = self.root.join(".edge-router.pid");
+        fs::write(&pid_file, pid.to_string())?;
+        self.log(&format!("[EdgeRouter] PID: {} (written to {})", pid, pid_file.display()));
+
         // Set up filesystem watcher
         let (tx, rx) = std::sync::mpsc::channel();
         let mut watcher = RecommendedWatcher::new(tx, NotifyConfig::default())?;
@@ -93,6 +100,13 @@ impl EdgeRouterDaemon {
                     // Timeout - continue
                 }
             }
+        }
+
+        // Cleanup PID file on shutdown
+        let pid_file = self.root.join(".edge-router.pid");
+        if pid_file.exists() {
+            let _ = fs::remove_file(&pid_file);
+            self.log(&format!("[EdgeRouter] Removed PID file: {}", pid_file.display()));
         }
 
         Ok(())

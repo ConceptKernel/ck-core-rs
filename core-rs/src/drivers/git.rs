@@ -220,13 +220,14 @@ impl GitDriver {
 
     /// Format git describe output to semantic version with hash
     ///
-    /// Input:  `v0.2.0-3-gab12cd` (3 commits ahead of v0.2.0)
+    /// Handles both 2-part and 3-part base versions:
+    /// Input:  `v0.2-3-gab12cd` (3 commits ahead of v0.2)
     /// Output: `v0.2.3-gab12cd` (use commits_ahead as patch version)
     ///
-    /// Input:  `v0.2.0-0-gab12cd` (on tag)
-    /// Output: `v0.2.0` (clean semantic version)
+    /// Input:  `v0.2-0-gab12cd` (on tag)
+    /// Output: `v0.2` (clean tag)
     fn format_version(raw: &str) -> Result<String> {
-        // Pattern: v{major}.{minor}.{patch}-{commits}-g{hash}
+        // Pattern: v{major}.{minor}-{commits}-g{hash} or v{major}.{minor}.{patch}-{commits}-g{hash}
         let parts: Vec<&str> = raw.split('-').collect();
 
         if parts.len() < 3 {
@@ -234,30 +235,77 @@ impl GitDriver {
             return Ok(raw.to_string());
         }
 
-        let base_version = parts[0]; // v0.2.0
+        let base_version = parts[0]; // v0.2 or v0.2.0
         let commits_ahead = parts[1]; // "3"
         let hash = parts[2];          // "gab12cd"
 
-        // Parse base version: v0.2.0
+        // Parse base version: v0.2 or v0.2.0
         let version_parts: Vec<&str> = base_version.trim_start_matches('v').split('.').collect();
-        if version_parts.len() != 3 {
-            // Malformed, return as-is
-            return Ok(raw.to_string());
-        }
 
-        let major = version_parts[0];
-        let minor = version_parts[1];
+        let (major, minor) = match version_parts.len() {
+            2 => {
+                // Two-part version: v0.2
+                (version_parts[0], version_parts[1])
+            }
+            3 => {
+                // Three-part version: v0.2.0
+                (version_parts[0], version_parts[1])
+            }
+            _ => {
+                // Malformed, return as-is
+                return Ok(raw.to_string());
+            }
+        };
 
         // Parse commits ahead
         let commits: u32 = commits_ahead.parse()
             .map_err(|_| CkpError::IoError(format!("Invalid commits_ahead: {}", commits_ahead)))?;
 
         if commits == 0 {
-            // Clean tag: v0.2.0
-            Ok(format!("v{}.{}.{}", major, minor, version_parts[2]))
+            // Clean tag: return original base version (v0.2 or v0.2.0)
+            Ok(base_version.to_string())
         } else {
             // Between tags: v0.2.3-gab12cd
             Ok(format!("v{}.{}.{}-{}", major, minor, commits, hash))
+        }
+    }
+
+    /// Get semantic version without 'v' prefix and hash
+    ///
+    /// Converts display version to semantic version format:
+    /// - `v0.1` → `0.1.0`
+    /// - `v0.2.3-gab12cd` → `0.2.3`
+    /// - `v1.4` → `1.4.0`
+    pub fn get_semantic_version(&self) -> Result<Option<String>> {
+        match self.get_current_version()? {
+            Some(version) => {
+                // Strip 'v' prefix
+                let without_v = version.trim_start_matches('v');
+
+                // Remove hash suffix if present (-gXXXXXXX)
+                let without_hash = without_v.split("-g").next().unwrap_or(without_v);
+
+                // Parse parts
+                let parts: Vec<&str> = without_hash.split('.').collect();
+
+                let semantic = match parts.len() {
+                    2 => {
+                        // Two-part: 0.1 → 0.1.0
+                        format!("{}.{}.0", parts[0], parts[1])
+                    }
+                    3 => {
+                        // Three-part already: 0.2.3 → 0.2.3
+                        without_hash.to_string()
+                    }
+                    _ => {
+                        // Fallback
+                        without_hash.to_string()
+                    }
+                };
+
+                Ok(Some(semantic))
+            }
+            None => Ok(None)
         }
     }
 

@@ -1,6 +1,6 @@
 # ConceptKernel
 
-[![Version](https://img.shields.io/badge/version-1.3.19-blue.svg)](https://github.com/conceptkernel/ck-core-rs)
+[![Version](https://img.shields.io/badge/version-1.3.20-blue.svg)](https://github.com/conceptkernel/ck-core-rs)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)](https://www.rust-lang.org)
 [![Protocol](https://img.shields.io/badge/protocol-CKP%2Fv1.3-purple.svg)](docs/)
@@ -31,6 +31,48 @@ ConceptKernel is in active early-stage development. We are currently embedding p
 - Democratic consensus model
 
 Join us in building the future of conscious computation. 🌱
+
+---
+
+## 🎯 What's New in v1.3.20
+
+**Major Features:**
+
+**🔌 Driver Abstraction Layer**
+- Pluggable storage drivers: Filesystem, Jena Fuseki, PostgreSQL+AGE, SeaweedFS
+- Pluggable transport drivers: Local, NATS, WebSocket, gRPC
+- Seamless switching between stateful and stateless deployments
+
+**☁️ Stateless Kubernetes Deployment**
+- NATS JetStream for messaging (8-15ms latency)
+- Jena Fuseki for RDF storage
+- MsgPack binary protocol (81% size reduction)
+- Zero filesystem dependencies
+
+**🔗 Canonical URN Format (v1.3.20)**
+- Standardized: `ckp://Kernel#{Name}:{Version}`
+- Edge format: `ckp://Edge#Connection-{Source}-to-{Target}-{Predicate}:{Version}`
+- Fragment separator (`#`) for semantic clarity
+- SHACL validation in Jena Fuseki
+
+**🎨 Visual CKDL Orchestrator**
+- Interactive workflow visualization with Konva.js
+- Force-directed graph layout (LR, TB, FREE modes)
+- Real-time CKDL parser and editor
+- Click-to-explore kernel relationships
+
+**🤖 EGO Self-Improvement Capability**
+- Each kernel can chat with LLMs for self-reflection
+- Auto-generate CKDL workflows from natural language
+- Visual diff and approval workflow
+- Kernel introspection and evolution
+
+**📊 Real-World Usecases**
+- `HtmlHost.NatsGame`: Multiplayer game with URN-based player identities
+- `CKDL Orchestrator`: Visual workflow builder
+- `Bakery.OrderProcessor`: Production workflow example
+
+See [RELEASE_NOTES_v1.3.20.md](./RELEASE_NOTES_v1.3.20.md) for complete details.
 
 ---
 
@@ -192,7 +234,7 @@ This automatically detects your platform and installs the latest version of `ckp
 docker pull conceptkernel/ck-core-rs:latest
 
 # Or specific version
-docker pull conceptkernel/ck-core-rs:v1.3.19
+docker pull conceptkernel/ck-core-rs:v1.3.20
 
 # Run ckp
 docker run --rm conceptkernel/ck-core-rs:latest --version
@@ -204,7 +246,7 @@ Download pre-built binaries from [Releases](https://github.com/ConceptKernel/ck-
 
 ```bash
 # Example for Linux x86_64
-curl -L https://github.com/ConceptKernel/ck-core-rs/releases/download/v1.3.19/ckp-v1.3.19-x86_64-linux -o ckp
+curl -L https://github.com/ConceptKernel/ck-core-rs/releases/download/v1.3.20/ckp-v1.3.20-x86_64-linux -o ckp
 chmod +x ckp
 sudo mv ckp /usr/local/bin/
 ```
@@ -230,7 +272,7 @@ cargo build --release --bin ckp
 
 The official [@conceptkernel/ck-client-js](https://www.npmjs.com/package/@conceptkernel/ck-client-js) library provides elegant one-line connectivity to ConceptKernel systems. Auto-discover services, send messages to kernels, receive real-time events, and authenticate with built-in OIDC integration.
 
-**Current version:** [v1.3.22](https://www.npmjs.com/package/@conceptkernel/ck-client-js/v/1.3.22) (published separately on npm)
+**Current version:** [v1.3.23](https://www.npmjs.com/package/@conceptkernel/ck-client-js/v/1.3.23) (published separately on npm)
 
 **Installation:**
 
@@ -336,7 +378,7 @@ The community. Through role-based permissions, consensus voting, and captured de
 
 ## Performance
 
-ConceptKernel Rust Runtime (v1.3.19):
+ConceptKernel Rust Runtime (v1.3.20):
 
 | Metric | Rust Binary | Rust Docker | Notes |
 |--------|-------------|-------------|-------|
@@ -346,17 +388,103 @@ ConceptKernel Rust Runtime (v1.3.19):
 | Status (35 kernels) | **80-150 ms** | **80-150 ms** | PID validation + state check |
 | Deployment | **Zero deps** | **Distroless base** | No runtime dependencies |
 | Container base | — | **Google Distroless** | Minimal attack surface |
+| NATS latency | **8-15 ms** | **8-15 ms** | JetStream pub/sub round-trip |
+| MsgPack reduction | **81%** | **81%** | Binary protocol vs JSON |
 
 **Architecture:** Built with Rust for maximum performance and safety. Tested with 100+ concurrent kernels. Linear O(n) scaling. Single-digit megabytes per background process.
 
 **Docker Image:** Multi-arch support (amd64/arm64) using Google Distroless base (~25MB total) with pre-built stripped binaries for minimal footprint.
+
+**Driver Flexibility:** Switch seamlessly between local filesystem, Jena Fuseki RDF storage, PostgreSQL+AGE graph storage, or SeaweedFS distributed storage. Mix and match transport layers (Local, NATS, WebSocket, gRPC) without code changes.
+
+---
+
+## NATS-First Event Architecture
+
+ConceptKernel v1.3.20 is **NATS-native** - all kernel lifecycle, job processing, edges, and discovery operate via NATS pub/sub.
+
+### Real-Time Event Streams
+
+Every kernel governor emits lifecycle events you can subscribe to:
+
+```javascript
+// Subscribe to all startup events
+nc.subscribe('kernel.*.lifecycle.startup.>')
+
+// Subscribe to job processing for specific kernel
+nc.subscribe('kernel.System-Bakery.job.>')
+
+// Subscribe to all edge lifecycle events
+nc.subscribe('edge.*.*.lifecycle.*')
+```
+
+### Comprehensive Event Codes
+
+**70+ event types** across 10 categories:
+
+| Category | Event Count | NATS Pattern | Documentation |
+|----------|-------------|--------------|---------------|
+| **Startup** (SU) | 16 phases | `kernel.{name}.lifecycle.startup.*` | [31-EVENT-CODES](./31-EVENT-CODES-PHASES.v1.3.20.md#ii-startup-lifecycle-events-16-phases) |
+| **Job Processing** (JB) | 18 phases | `kernel.{name}.job.*` | [31-EVENT-CODES](./31-EVENT-CODES-PHASES.v1.3.20.md#iii-job-processing-events-18-phases---success-path) |
+| **Workflow** (WF) | 5 states | `kernel.{name}.workflow.phase.*` | [31-EVENT-CODES](./31-EVENT-CODES-PHASES.v1.3.20.md#iv-workflow-phase-events-5-states) |
+| **Edge Lifecycle** (ED) | 4 events | `edge.{src}-to-{tgt}.{pred}.lifecycle.*` | [31-EVENT-CODES](./31-EVENT-CODES-PHASES.v1.3.20.md#x-edge-action-events-4-lifecycle-phases) |
+| **Action Triggers** (AC) | 6 actions | `kernel.{name}.action.*` | [31-EVENT-CODES](./31-EVENT-CODES-PHASES.v1.3.20.md#a-kernel-action-triggers) |
+| **Context Queries** (CX) | 7 queries | `kernel.{name}.context.*` | [31-EVENT-CODES](./31-EVENT-CODES-PHASES.v1.3.20.md#b-kernel-context-queries) |
+| **Health Probes** (PR) | 4 probes | `kernel.{name}.probe.*` | [31-EVENT-CODES](./31-EVENT-CODES-PHASES.v1.3.20.md#c-kernel-probe-system) |
+| **Agent/Chat** (AG) | 3 interfaces | `kernel.{name}.agent.*` | [31-EVENT-CODES](./31-EVENT-CODES-PHASES.v1.3.20.md#e-agentchat-interface) |
+| **Triggers** (TR) | 5 types | `kernel.{name}.trigger.*` | [31-EVENT-CODES](./31-EVENT-CODES-PHASES.v1.3.20.md#f-trigger-subscriptions) |
+| **Discovery** | Decentralized | `kernel.discovery.request` | [31-EVENT-CODES](./31-EVENT-CODES-PHASES.v1.3.20.md#d-discovery-protocol-decentralized) |
+
+### Example: Monitor Kernel Startup
+
+```javascript
+// Subscribe to System.Registry startup sequence
+nc.subscribe('kernel.System-Registry.lifecycle.startup.>', (msg) => {
+  const event = sc.decode(msg.data)
+  console.log(`${event.phaseCode}: ${event.phaseName} (${event.progress}%)`)
+})
+
+// Start the kernel
+// Output:
+// SU01: initiated (0%)
+// SU02: project_config_loaded (12%)
+// ...
+// SU16: ready (100%)
+```
+
+### System.Discovery Aggregated Queries
+
+Query the entire computational graph via NATS:
+
+```javascript
+// List all online kernels
+const response = await nc.request('discovery.query.kernels',
+  sc.encode(JSON.stringify({ filter: { status: 'ONLINE' } })))
+
+// Execute custom SPARQL
+await nc.request('discovery.query.sparql',
+  sc.encode(JSON.stringify({ query: '...' })))
+
+// Get kernel dependencies
+await nc.request('discovery.query.dependencies',
+  sc.encode(JSON.stringify({ kernel: 'System.Bakery' })))
+```
+
+**Available Query Functions:**
+- `discovery.query.kernels` - List all kernels (filterable)
+- `discovery.query.edges` - List all edge connections
+- `discovery.query.sparql` - Execute custom SPARQL queries
+- `discovery.query.kernel` - Get specific kernel metadata
+- `discovery.query.dependencies` - Get dependency graph
+
+See [31-EVENT-CODES-PHASES.v1.3.20.md](./31-EVENT-CODES-PHASES.v1.3.20.md) for complete NATS event reference.
 
 ---
 
 ## Command Reference
 
 ```
-ckp v1.3.19 - ConceptKernel Protocol CLI
+ckp v1.3.20 - ConceptKernel Protocol CLI
 
 ckp
 ├── concept                # Manage concepts (kernels)
@@ -389,6 +517,10 @@ ckp
 │   ├── list             # List all cached packages
 │   ├── import <path>    # Import tar.gz package
 │   └── fork <name>      # Fork package to create new kernel
+│
+├── driver                # Configure storage/transport drivers
+│   ├── storage <type>   # Set storage: local, jena, age, seaweedfs
+│   └── transport <type> # Set transport: local, nats, websocket, grpc
 │
 ├── up                    # Start all concepts in project
 ├── down                  # Stop all running concepts
@@ -528,17 +660,20 @@ No direct writes. No coupling. Edges mostly just connect — transformation rare
 
 ## The Foundation
 
-ConceptKernel v1.3.19 implements the CKP (Concept Kernel Protocol) specification. It provides:
+ConceptKernel v1.3.20 implements the CKP (Concept Kernel Protocol) specification. It provides:
 
 - **Standardized kernel anatomy** - conceptkernel.yaml, ontology.ttl, queue/, storage/, tx/, tool/
 - **CKP URN addressing** - `ckp://Kernel:version` for sovereign identity
+- **Driver abstraction** - Pluggable storage (Local, Jena, AGE, SeaweedFS) and transport (Local, NATS, WebSocket, gRPC) backends
 - **Type-safe edges** - Validated connections with consensus approval
 - **BFO-grounded ontology** - Every entity mapped to Basic Formal Ontology
+- **Semantic validation** - SHACL validation in Jena Fuseki for RDF compliance
+- **Stateless deployment** - Zero filesystem dependencies with NATS+Jena in Kubernetes
 - **Role-based access control** - Permissions flow from roles, roles from consensus
 - **Consensus mechanisms** - Democratic feature development through voting
 - **Proof system** - Every action produces auditable evidence
 - **Self-improvement** - System evolves based on captured decisions
-- **Filesystem-as-protocol** - No external databases, message queues, or APIs
+- **MsgPack protocol** - Binary message format with 81% size reduction vs JSON
 
 ---
 

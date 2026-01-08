@@ -1,6 +1,6 @@
 [package]
 name = "ck-core-rs"
-version = "1.3.19"
+version = "1.3.20-alpha.2"
 edition = "2021"
 authors = ["Peter Styk <peter@styk.tv>"]
 description = "Concept Kernel - a sovereign computational entity in a distributed graph."
@@ -18,6 +18,9 @@ path = "core-rs/src/bin/ckp.rs"
 [dependencies]
 # Async runtime
 tokio = { version = "1.40", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+async-trait = "0.1"
+futures = "0.3"
 
 # File watching
 notify = "7.0"
@@ -87,6 +90,17 @@ flate2 = "1.0"
 # RDF/Ontology library (Phase 4 Stage 0)
 oxigraph = "0.4"
 
+# NATS messaging for v1.3.20 (JetStream)
+async-nats = "0.33"
+
+# MsgPack binary encoding for NATS transport
+rmp-serde = "1.1"
+
+# Additional dependencies for v1.3.20 drivers
+bytes = "1.5"
+base64 = "0.22"
+urlencoding = "2.1"
+
 [dev-dependencies]
 tempfile = "3.10"
 tokio-test = "0.4"
@@ -117,6 +131,38 @@ path = "core-rs/tests/integration/project_lifecycle_tests.rs"
 [[test]]
 name = "edge_router_integration"
 path = "core-rs/tests/integration/edge_router_integration_test.rs"
+
+[[test]]
+name = "jena_nats_integration"
+path = "core-rs/tests/integration/jena_nats_integration_test.rs"
+
+[[test]]
+name = "edge_routing_integration_v2"
+path = "core-rs/tests/integration/edge_routing_integration_tests.rs"
+
+[[test]]
+name = "use_case_verification"
+path = "core-rs/tests/integration/use_case_verification_tests.rs"
+
+[[test]]
+name = "workflow_tx_jena_validation"
+path = "core-rs/tests/integration/workflow_tx_jena_validation.rs"
+
+[[test]]
+name = "edge_router_diskless_discovery"
+path = "core-rs/tests/integration/edge_router_diskless_discovery_tests.rs"
+
+[[test]]
+name = "diskless_workflow_integration"
+path = "core-rs/tests/integration/diskless_workflow_integration_tests.rs"
+
+[[test]]
+name = "kernel_startup_occurrent"
+path = "core-rs/tests/integration/kernel_startup_occurrent_tests.rs"
+
+[[test]]
+name = "ontology_validation"
+path = "core-rs/tests/integration/ontology_validation_tests.rs"
 
 # Contract tests (protocol invariants)
 [[test]]

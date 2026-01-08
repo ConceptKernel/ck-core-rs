@@ -103,6 +103,58 @@ pub struct OntologyConfig {
     pub workflow: Option<String>,
 }
 
+/// Backend event configuration (v1.3.20)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BackendEvents {
+    /// Publish kernel lifecycle events (startup, shutdown)
+    pub publish_lifecycle: bool,
+    /// Publish job processing events
+    pub publish_jobs: bool,
+    /// Publish workflow phase events
+    pub publish_workflow: bool,
+}
+
+/// NATS backend configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NatsBackend {
+    pub enabled: bool,
+    pub endpoint: String,
+    pub websocket: String,
+    pub namespace: String,
+    pub monitoring: String,
+    pub requires_port_forward: bool,
+    pub port_forward_command: String,
+    pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub events: Option<BackendEvents>,
+}
+
+/// Jena backend configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct JenaBackend {
+    pub enabled: bool,
+    pub endpoint: String,
+    pub namespace: String,
+    pub dataset: String,
+    pub requires_port_forward: bool,
+    pub port_forward_command: String,
+    pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+}
+
+/// Backend services configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Backends {
+    pub nats: NatsBackend,
+    pub jena: JenaBackend,
+}
+
 /// Project specification
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -124,6 +176,9 @@ pub struct Spec {
     /// Ontology library configuration (Phase 4 Stage 0)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ontology: Option<OntologyConfig>,
+    /// Backend services configuration (v1.3.20)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backends: Option<Backends>,
 }
 
 impl ProjectConfig {
@@ -268,6 +323,7 @@ impl ProjectConfig {
                 protocol: None,
                 default_user: None,
                 ontology: None,
+                backends: None,
             },
         }
     }

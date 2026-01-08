@@ -3,16 +3,14 @@
  * RDF-based ontology library using standard URN resolution
  */
 
-use oxigraph::store::Store;
-use oxigraph::model::NamedNode;
-use oxigraph::io::RdfFormat;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use crate::urn::UrnResolver;
-use crate::project::ProjectConfig;
+use crate::project::{ProjectConfig, ProjectRegistry};
+use crate::drivers::{JenaStorage, StorageDriver};
 
 #[derive(Error, Debug)]
 pub enum OntologyError {
@@ -70,26 +68,107 @@ pub struct KernelMetadata {
 }
 
 pub struct OntologyLibrary {
-    store: Store,
+    jena: JenaStorage,
     pub project_root: PathBuf,
     kernel_graphs: HashMap<String, String>,
 }
 
 impl OntologyLibrary {
+    /// Find project root by searching for .ckproject
+    /// Falls back to project registry if not found in directory tree
+    fn find_project_root(start_dir: &Path) -> Result<PathBuf, OntologyError> {
+        let mut current = start_dir.to_path_buf();
+
+        // First, try walking up directory tree
+        loop {
+            let ckproject_path = current.join(".ckproject");
+            if ckproject_path.exists() {
+                return Ok(current);
+            }
+
+            // Try parent directory
+            match current.parent() {
+                Some(parent) => current = parent.to_path_buf(),
+                None => break, // Reached root, try project registry
+            }
+        }
+
+        // Fallback 1: Check if we're inside a registered project
+        if let Ok(mut registry) = ProjectRegistry::new() {
+            if let Ok(Some(project)) = registry.get_current(Some(start_dir)) {
+                let project_path = PathBuf::from(&project.path);
+                if project_path.join(".ckproject").exists() {
+                    return Ok(project_path);
+                }
+            }
+
+            // Fallback 2: Use the "current" project from registry
+            if let Ok(Some(current_name)) = registry.get_current_name() {
+                if let Ok(Some(project)) = registry.get(&current_name) {
+                    let project_path = PathBuf::from(&project.path);
+                    if project_path.join(".ckproject").exists() {
+                        return Ok(project_path);
+                    }
+                }
+            }
+        }
+
+        Err(OntologyError::LoadError(format!(
+            ".ckproject not found in {} or parent directories, and no current project in registry",
+            start_dir.display()
+        )))
+    }
+
     /// Create and load ontology library from .ckproject
-    pub fn new(project_root: PathBuf) -> Result<Self, OntologyError> {
-        let store = Store::new()
-            .map_err(|e| OntologyError::StoreError(e.to_string()))?;
-        
+    /// Automatically detects project root by searching for .ckproject
+    pub fn new(start_dir: PathBuf) -> Result<Self, OntologyError> {
+        // Find project root
+        let project_root = Self::find_project_root(&start_dir)?;
+
+        // Read .ckproject to get Jena configuration
+        let ckproject_path = project_root.join(".ckproject");
+
+        let config = ProjectConfig::load(&ckproject_path)
+            .map_err(|e| OntologyError::LoadError(format!("Failed to load .ckproject: {}", e)))?;
+
+        // Get Jena backend configuration
+        let jena_config = config.spec.backends
+            .as_ref()
+            .ok_or_else(|| OntologyError::LoadError("No spec.backends in .ckproject".to_string()))?
+            .jena.clone();
+
+        if !jena_config.enabled {
+            return Err(OntologyError::LoadError(
+                "Jena backend is disabled in .ckproject".to_string()
+            ));
+        }
+
+        eprintln!("[OntologyLibrary] Using Jena Fuseki: {}", jena_config.endpoint);
+        eprintln!("[OntologyLibrary] Dataset: {}", jena_config.dataset);
+
+        // Create JenaStorage with authentication
+        let jena = if let (Some(username), Some(password)) = (jena_config.username, jena_config.password) {
+            eprintln!("[OntologyLibrary] Using authenticated access");
+            JenaStorage::new_with_auth(
+                jena_config.endpoint,
+                jena_config.dataset,
+                username,
+                password,
+            )
+        } else {
+            eprintln!("[OntologyLibrary] Using unauthenticated access");
+            JenaStorage::new(jena_config.endpoint, jena_config.dataset)
+        };
+
         let mut library = Self {
-            store,
+            jena,
             project_root: project_root.clone(),
             kernel_graphs: HashMap::new(),
         };
-        
+
         // Load core ontologies from .ckproject
         library.load_from_project(&project_root)?;
-        
+
         Ok(library)
     }
     
@@ -340,17 +419,33 @@ impl OntologyLibrary {
         }
 
         let content = fs::read_to_string(path)?;
-        
-        let _graph_name = NamedNode::new(graph_uri)
-            .map_err(|e| OntologyError::ParseError(e.to_string()))?;
-        
-        self.store
-            .load_from_reader(
-                RdfFormat::Turtle,
-                content.as_bytes(),
-            )
-            .map_err(|e| OntologyError::LoadError(e.to_string()))?;
-        
+
+        // Load into Jena using SPARQL UPDATE (INSERT DATA)
+        // Note: For large ontologies, use Jena's Graph Store HTTP Protocol instead
+        let sparql_update = format!(
+            r#"
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX owl: <http://www.w3.org/2002/07/owl#>
+
+INSERT DATA {{
+  GRAPH <{graph_uri}> {{
+    # Ontology will be loaded via Graph Store Protocol
+  }}
+}}
+"#,
+            graph_uri = graph_uri
+        );
+
+        // Use current async runtime to call JenaStorage
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                // Upload TTL content to Jena using Graph Store HTTP Protocol
+                self.jena.upload_ttl_to_graph(graph_uri, &content).await
+                    .map_err(|e| OntologyError::LoadError(format!("Failed to upload to Jena: {}", e)))
+            })
+        })?;
+
         Ok(())
     }
     
@@ -672,44 +767,113 @@ impl OntologyLibrary {
 
     /// Execute SPARQL query
     pub fn query_sparql(&self, query: &str) -> Result<Vec<HashMap<String, String>>, OntologyError> {
-        use oxigraph::sparql::QueryResults;
-        
-        let results = self.store
-            .query(query)
-            .map_err(|e| OntologyError::QueryError(e.to_string()))?;
-        
-        match results {
-            QueryResults::Solutions(solutions) => {
+        // Use current async runtime to call JenaStorage
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                let json_results = self.jena.execute_sparql_query(query).await
+                    .map_err(|e| OntologyError::QueryError(format!("Jena query failed: {}", e)))?;
+
+                // Parse JSON results into HashMap format
                 let mut rows = Vec::new();
-                
-                for solution in solutions {
-                    let solution = solution
-                        .map_err(|e| OntologyError::QueryError(e.to_string()))?;
-                    
+
+                // Handle ASK queries (boolean results)
+                if let Some(boolean) = json_results.get("boolean") {
                     let mut row = HashMap::new();
-                    
-                    for (var, term) in solution.iter() {
-                        row.insert(var.as_str().to_string(), term.to_string());
-                    }
-                    
-                    rows.push(row);
+                    row.insert("result".to_string(), boolean.to_string());
+                    return Ok(vec![row]);
                 }
-                
+
+                // Handle SELECT queries
+                if let Some(bindings) = json_results.get("results")
+                    .and_then(|r| r.get("bindings"))
+                    .and_then(|b| b.as_array())
+                {
+                    for binding in bindings {
+                        let mut row = HashMap::new();
+
+                        if let Some(obj) = binding.as_object() {
+                            for (var, value) in obj {
+                                if let Some(val_str) = value.get("value").and_then(|v| v.as_str()) {
+                                    row.insert(var.clone(), val_str.to_string());
+                                }
+                            }
+                        }
+
+                        rows.push(row);
+                    }
+                }
+
                 Ok(rows)
-            }
-            QueryResults::Boolean(result) => {
-                let mut row = HashMap::new();
-                row.insert("result".to_string(), result.to_string());
-                Ok(vec![row])
-            }
-            QueryResults::Graph(_) => {
-                Err(OntologyError::QueryError(
-                    "Graph queries not yet supported".to_string()
-                ))
-            }
-        }
+            })
+        })
     }
-    
+
+    /// Execute SPARQL UPDATE query (v1.3.20 - workflow persistence)
+    ///
+    /// Executes INSERT, DELETE, or other SPARQL UPDATE operations.
+    /// Used for storing workflows, edges, and other RDF data.
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use ckp_core::ontology::OntologyLibrary;
+    /// # use std::path::PathBuf;
+    /// # let library = OntologyLibrary::new(PathBuf::from("."))?;
+    /// let update = r#"
+    ///     PREFIX ckpw: <https://conceptkernel.org/ontology/workflow#>
+    ///     INSERT DATA {
+    ///         <ckp://Process#MyWorkflow:v1> a ckpw:Workflow .
+    ///     }
+    /// "#;
+    /// library.execute_update(update)?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn execute_update(&self, update: &str) -> Result<(), OntologyError> {
+        // Use current async runtime to call JenaStorage
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                self.jena.execute_sparql_update(update).await
+                    .map_err(|e| OntologyError::QueryError(format!("Jena update failed: {}", e)))
+            })
+        })
+    }
+
+    /// Save TTL data to a named graph (proven working method)
+    pub fn save_ttl_to_graph(&self, ttl_data: &str, graph_uri: &str) -> Result<(), OntologyError> {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                self.jena.save_ttl_to_graph(ttl_data, graph_uri).await
+                    .map_err(|e| OntologyError::QueryError(format!("TTL save failed: {}", e)))
+            })
+        })
+    }
+
+    /// Execute SPARQL UPDATE query
+    ///
+    /// Modifies the RDF store with INSERT/DELETE operations
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use ckp_core::OntologyLibrary;
+    /// # use std::path::PathBuf;
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let library = OntologyLibrary::new(PathBuf::from("/project"))?;
+    /// library.execute_sparql_update(r#"
+    ///     PREFIX ex: <http://example.org/>
+    ///     INSERT DATA { ex:subject ex:predicate "value" }
+    /// "#)?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn execute_sparql_update(&self, update: &str) -> Result<(), OntologyError> {
+        // Use current async runtime to call JenaStorage
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                self.jena.execute_sparql_update(update).await
+                    .map_err(|e| OntologyError::QueryError(format!("Jena update failed: {}", e)))
+            })
+        })
+    }
+
     /// Check if class is BFO Occurrent (temporal entity)
     pub fn is_temporal_entity(&self, class_uri: &str) -> Result<bool, OntologyError> {
         let query = format!(
@@ -1173,19 +1337,14 @@ impl OntologyLibrary {
             permission = permission
         );
 
-        // Execute ASK query using Oxigraph store directly
-        use oxigraph::sparql::QueryResults;
+        // Execute ASK query using JenaStorage
+        let results = self.query_sparql(&query)?;
 
-        let query_obj = oxigraph::sparql::Query::parse(&query, None)
-            .map_err(|e| OntologyError::QueryError(e.to_string()))?;
-
-        let result = self.store.query(query_obj)
-            .map_err(|e| OntologyError::QueryError(e.to_string()))?;
-
-        match result {
-            QueryResults::Boolean(b) => Ok(b),
-            _ => Ok(false), // ASK should always return boolean
-        }
+        // ASK query returns {"result": "true/false"}
+        Ok(results.first()
+            .and_then(|row| row.get("result"))
+            .and_then(|s| s.parse::<bool>().ok())
+            .unwrap_or(false))
     }
 
     /// Get quorum level required for a permission

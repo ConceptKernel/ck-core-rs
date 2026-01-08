@@ -255,16 +255,18 @@ fn parse_kernel(lines: &[&str], start: usize, reader: &OntologyReader) -> Result
     let mut i = start + 1;
 
     while i < lines.len() {
-        let line = lines[i].trim();
-        if line.is_empty() || (!line.starts_with(' ') && !line.starts_with('\t')) {
+        let line = lines[i];
+        let trimmed = line.trim();
+
+        if trimmed.is_empty() || (!line.starts_with(' ') && !line.starts_with('\t')) {
             break;
         }
 
-        if let Some(t) = line.strip_prefix("TYPE:") {
+        if let Some(t) = trimmed.strip_prefix("TYPE:") {
             kernel_type = t.trim().to_string();
-        } else if let Some(r) = line.strip_prefix("RUNTIME:") {
+        } else if let Some(r) = trimmed.strip_prefix("RUNTIME:") {
             runtime = Some(r.trim().trim_matches('"').to_string());
-        } else if let Some(d) = line.strip_prefix("DESCRIPTION:") {
+        } else if let Some(d) = trimmed.strip_prefix("DESCRIPTION:") {
             description = d.trim().trim_matches('"').to_string();
         } else if line.trim().starts_with("CAPABILITIES:") {
             i += 1;
@@ -312,42 +314,43 @@ fn parse_edge(lines: &[&str], start: usize, reader: &OntologyReader) -> Result<(
         .trim()
         .to_string();
 
-    // Parse edge URN format: ckp://Edge.PREDICATE.Source-to-Target
-    let parts: Vec<&str> = edge_urn.split('.').collect();
-    let predicate = if parts.len() >= 2 {
-        parts[1].to_string()
-    } else {
-        String::new()
-    };
-
     let mut source = String::new();
     let mut target = String::new();
+    let mut predicate = String::new();
     let mut trigger = String::new();
     let mut i = start + 1;
 
     while i < lines.len() {
-        let line = lines[i].trim();
-        if line.is_empty() || (!line.starts_with(' ') && !line.starts_with('\t')) {
+        let line = lines[i];
+        let trimmed = line.trim();
+        eprintln!("[CKDL Parser] Processing line {}: '{}'", i, trimmed);
+
+        if trimmed.is_empty() || (!line.starts_with(' ') && !line.starts_with('\t')) {
+            eprintln!("[CKDL Parser] Breaking at line {} - empty or no indent", i);
             break;
         }
 
-        if let Some(_p) = line.strip_prefix("PREDICATE:") {
-            // predicate already extracted from URN
-        } else if let Some(t) = line.strip_prefix("TRIGGER:") {
+        if let Some(p) = trimmed.strip_prefix("PREDICATE:") {
+            predicate = p.trim().trim_matches('"').to_string();
+            eprintln!("[CKDL Parser] Parsed PREDICATE: '{}'", predicate);
+        } else if let Some(t) = trimmed.strip_prefix("TRIGGER:") {
             trigger = t.trim().trim_matches('"').to_string();
+            eprintln!("[CKDL Parser] Parsed TRIGGER: '{}'", trigger);
+        } else if let Some(s) = trimmed.strip_prefix("SOURCE:") {
+            source = s.trim().trim_matches('"').to_string();
+            eprintln!("[CKDL Parser] Parsed SOURCE: '{}'", source);
+        } else if let Some(t) = trimmed.strip_prefix("TARGET:") {
+            target = t.trim().trim_matches('"').to_string();
+            eprintln!("[CKDL Parser] Parsed TARGET: '{}'", target);
+        } else {
+            eprintln!("[CKDL Parser] Line didn't match any pattern");
         }
 
         i += 1;
     }
 
-    // Extract source and target from edge URN
-    if let Some(last_part) = parts.last() {
-        let source_target: Vec<&str> = last_part.split("-to-").collect();
-        if source_target.len() == 2 {
-            source = source_target[0].to_string();
-            target = source_target[1].to_string();
-        }
-    }
+    eprintln!("[CKDL Parser] Final edge values - source: '{}', target: '{}', predicate: '{}'",
+        source, target, predicate);
 
     // Check if both source and target kernels exist
     let origin = check_edge_origin(&source, &target, reader);

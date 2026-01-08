@@ -14,6 +14,7 @@ pub mod generator;
 pub mod improvement;
 pub mod library;
 pub mod query;
+pub mod validator;
 
 // BFO 2020 type system
 pub use bfo::{BfoEntityType, BfoAligned};
@@ -31,10 +32,19 @@ pub use generator::OntologyGenerator;
 // Self-improvement API (validation, recommendations, consensus)
 pub use improvement::{
     ImprovementAPI,
-    ValidationIssue, IssueSeverity, IssueType,
+    ValidationIssue as ImprovementValidationIssue,
+    IssueSeverity, IssueType,
     ImprovementRecommendation, Priority, ActionType, ConsensusStatus,
     ImprovementProcess, ProcessPhase,
     TriggerImprovementAction, ImprovementActionResponse,
+};
+
+// Ontology validator (structural validation)
+pub use validator::{
+    OntologyValidator,
+    ValidationReport,
+    ValidationIssue,
+    ValidationSeverity,
 };
 
 #[cfg(test)]
